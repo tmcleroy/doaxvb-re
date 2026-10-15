@@ -31,7 +31,7 @@ static struct {
     bool hotkey_down;
 } dump;
 
-enum { MESH_DUMP_BURST = 6, MESH_DUMP_BURST_SPACING = 30 };
+enum { MESH_DUMP_BURST = 8, MESH_DUMP_BURST_SPACING = 20 };
 
 static bool in_burst(uint32_t present)
 {

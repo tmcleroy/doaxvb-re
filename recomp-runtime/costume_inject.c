@@ -4,10 +4,14 @@
 #include "d3d_frame_adapter.h"
 #include "runtime.h"
 
+#include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <dirent.h>
+#endif
 
 /* DOAXBV keeps each actor's 32 bone matrices (row-vector, 64 bytes each) at
    0x004D3650 + actor * 0x800 (see animation_probe.c). An actor part's WORLD0
@@ -31,6 +35,8 @@ typedef struct Part {
     float *skinned; /* vertex_count * 8 floats: position, normal, uv */
     bool has_material;
     float material[17]; /* source D3DMATERIAL8: diffuse, ambient, specular, emissive, power */
+    bool has_alpha_test, alpha_test;
+    uint32_t alpha_func, alpha_ref;
 } Part;
 
 typedef struct Asset {
@@ -49,7 +55,6 @@ typedef struct Asset {
 static struct {
     bool configured, enabled;
     unsigned fighter_mask;
-    Asset assets[FIGHTERS];
     Asset *fighter_asset[FIGHTERS];
     uint32_t injected_present[FIGHTERS];
     /* Lighting of the fighter's last lit draw: the draw that triggers the
@@ -202,7 +207,7 @@ static bool load(Asset *a, unsigned slot, const char *path)
     char magic[4];
     uint32_t head[4];
     bool ok = read_all(f, magic, 4) && memcmp(magic, "D3C1", 4) == 0 &&
-        read_all(f, head, sizeof head) && (head[0] == 2u || head[0] == 3u) && head[1] <= 16u;
+        read_all(f, head, sizeof head) && head[0] >= 2u && head[0] <= 5u && head[1] <= 16u;
     if (ok) {
         a->relative_count = head[1];
         for (uint32_t i = 0; ok && i < head[1]; ++i)
@@ -225,7 +230,7 @@ static bool load(Asset *a, unsigned slot, const char *path)
             x->desc.mip_levels = t[3]; x->desc.bits_per_pixel = t[4]; x->desc.linear = t[5] != 0;
             x->desc.pitch = t[6];
             /* Outside guest RAM and its aliases, so it cannot collide with a game texture key. */
-            x->desc.data = 0xd0000000u + slot * 0x08000000u + i * 0x00100000u;
+            x->desc.data = 0xd0000000u + slot * 0x00800000u + i * 0x00008000u;
             x->byte_count = t[7]; x->palette_count = t[8];
             x->bytes = malloc(t[7] ? t[7] : 1); x->palette = t[8] ? malloc(t[8]) : NULL;
             ok = read_all(f, x->bytes, t[7]) && (!t[8] || read_all(f, x->palette, t[8]));
@@ -245,6 +250,16 @@ static bool load(Asset *a, unsigned slot, const char *path)
                 uint32_t present_flag = 0;
                 ok = read_all(f, &present_flag, 4) && read_all(f, p->material, sizeof p->material);
                 p->has_material = present_flag != 0;
+            }
+            if (ok && head[0] >= 5u) {
+                uint32_t t[3];
+                ok = read_all(f, t, sizeof t);
+                p->has_alpha_test = true; p->alpha_test = t[0] != 0; p->alpha_func = t[1]; p->alpha_ref = t[2];
+            }
+            if (ok && head[0] >= 4u && (p->flags & 4u)) {
+                /* Soft-part data (physics) is not used on this side yet: skip it. */
+                float params[4];
+                ok = read_all(f, params, sizeof params) && fseek(f, (long)p->vertex_count * 4, SEEK_CUR) == 0;
             }
             p->vertices = malloc((size_t)p->vertex_count * p->stride + 1);
             p->indices = malloc((size_t)p->index_count * 2 + 2);
@@ -266,37 +281,121 @@ static bool load(Asset *a, unsigned slot, const char *path)
     return ok;
 }
 
+/* Asset pool: every converted DOA3 character the session may use, loaded on
+   first use. F5 cycles every actor through stock and the pool together. */
+enum { POOL = 32 };
+static struct {
+    char *path[POOL];
+    Asset *asset[POOL];
+    bool failed[POOL];
+    uint32_t count;
+    int choice;
+    bool key_down;
+    uint32_t key_present;
+} pool;
+
+static int pool_add(const char *path)
+{
+    for (uint32_t i = 0; i < pool.count; ++i) if (strcmp(pool.path[i], path) == 0) return (int)i;
+    if (pool.count == POOL) return -1;
+    pool.path[pool.count] = strdup(path);
+    return (int)pool.count++;
+}
+
+static Asset *pool_get(int index)
+{
+    if (index < 0 || (uint32_t)index >= pool.count || pool.failed[index]) return NULL;
+    if (!pool.asset[index]) {
+        Asset *a = calloc(1, sizeof *a);
+        bool ok = a && load(a, (unsigned)index, pool.path[index]);
+        fprintf(stderr, "recomp costume inject: %s %s (%u parts, %u textures)\n",
+            ok ? "loaded" : "failed to load", pool.path[index], a ? a->part_count : 0u, a ? a->texture_count : 0u);
+        if (!ok) { pool.failed[index] = true; return NULL; }
+        pool.asset[index] = a;
+    }
+    return pool.asset[index];
+}
+
+#ifndef _WIN32
+static int compare_names(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static void scan_directory(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char *names[POOL]; unsigned n = 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL && n < POOL;) {
+        size_t len = strlen(e->d_name);
+        if (len > 4 && strcmp(e->d_name + len - 4, ".d3c") == 0) {
+            char *full = malloc(strlen(dir) + len + 2);
+            sprintf(full, "%s/%s", dir, e->d_name);
+            names[n++] = full;
+        }
+    }
+    closedir(d);
+    qsort(names, n, sizeof *names, compare_names);
+    for (unsigned i = 0; i < n; ++i) { pool_add(names[i]); free(names[i]); }
+}
+#endif
+
 bool recomp_costume_inject_enabled(void)
 {
     if (!inject.configured) {
         inject.configured = true;
         const char *both = getenv("RECOMP_COSTUME_INJECT");
+        const char *dir = getenv("RECOMP_COSTUME_DIR");
         const char *mask = getenv("RECOMP_COSTUME_ACTORS");
         inject.fighter_mask = mask ? (unsigned)strtoul(mask, NULL, 0) : 0xfu;
+#ifndef _WIN32
+        if (dir && *dir) scan_directory(dir);
+#endif
+        pool.choice = -1;
+        if (both && *both) { pool.choice = pool_add(both); }
         const char *names[FIGHTERS] = {"RECOMP_COSTUME_INJECT_A0", "RECOMP_COSTUME_INJECT_A1",
             "RECOMP_COSTUME_INJECT_A2", "RECOMP_COSTUME_INJECT_A3"};
         for (unsigned f = 0; f < FIGHTERS; ++f) {
             inject.injected_present[f] = UINT32_MAX;
             const char *path = getenv(names[f]);
-            if (!path || !*path) path = both;
-            if (!path || !*path || !(inject.fighter_mask & (1u << f))) continue;
-            /* Both fighters share one load when they name the same file. */
-            if (f > 0 && both && path == both) {
-                for (unsigned g = 0; g < f; ++g)
-                    if (inject.fighter_asset[g] == &inject.assets[g] && getenv(names[g]) == NULL) {
-                        inject.fighter_asset[f] = inject.fighter_asset[g];
-                        break;
-                    }
-                if (inject.fighter_asset[f]) continue;
-            }
-            Asset *a = &inject.assets[f];
-            bool ok = load(a, f, path);
-            fprintf(stderr, "recomp costume inject: actor %u %s %s (%u parts, %u textures)\n",
-                f, ok ? "loaded" : "failed to load", path, a->part_count, a->texture_count);
-            if (ok) { inject.fighter_asset[f] = a; inject.enabled = true; }
+            int index = path && *path ? pool_add(path) : pool.choice;
+            if (!(inject.fighter_mask & (1u << f))) continue;
+            inject.fighter_asset[f] = pool_get(index);
         }
+        inject.enabled = pool.count > 0;
+        if (inject.enabled)
+            fprintf(stderr, "recomp costume inject: %u characters available; F5 cycles them\n", pool.count);
     }
     return inject.enabled;
+}
+
+static void poll_keys(uint32_t present)
+{
+    if (pool.key_present == present) return;
+    pool.key_present = present;
+    const bool *keys = SDL_GetKeyboardState(NULL);
+    bool down = keys && keys[SDL_SCANCODE_F5];
+    static const char *cycle_at;
+    static bool cycle_read;
+    if (!cycle_read) { cycle_read = true; cycle_at = getenv("RECOMP_COSTUME_CYCLE_AT"); }
+    bool scripted = false;
+    for (const char *c = cycle_at; c && *c;) {
+        char *end;
+        unsigned long at = strtoul(c, &end, 10);
+        if (end == c) break;
+        scripted |= at == present;
+        c = *end == ',' ? end + 1 : end;
+    }
+    if ((down && !pool.key_down) || scripted) {
+        pool.choice = pool.choice + 1 >= (int)pool.count ? -1 : pool.choice + 1;
+        Asset *a = pool_get(pool.choice);
+        for (unsigned f = 0; f < FIGHTERS; ++f)
+            if (inject.fighter_mask & (1u << f)) inject.fighter_asset[f] = a;
+        fprintf(stderr, "recomp costume inject: all -> %s\n",
+            a ? pool.path[pool.choice] : "stock");
+    }
+    pool.key_down = down;
 }
 
 static void skin(Part *p, float bank[DOA3_BONES][16])
@@ -418,6 +517,11 @@ static void submit_fighter(Asset *a, const float *template_material, float bank[
         }
         d->blend.color_write_mask = 15;
         d->depth.depth_write_enable = (p->flags & 2u) != 0;
+        if (p->has_alpha_test) {
+            d->depth.alpha_test_enable = p->alpha_test;
+            d->depth.alpha_func = (RecompD3dCompareFunc)p->alpha_func;
+            d->depth.alpha_ref = p->alpha_ref;
+        }
         recomp_d3d_presenter_submit(recomp_d3d_frame_adapter_presenter(), &command);
     }
 }
@@ -443,6 +547,7 @@ bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const fl
 {
     (void)vertex_data;
     if (!recomp_costume_inject_enabled()) return false;
+    poll_keys(present);
     for (unsigned f = 0; f < FIGHTERS; ++f) {
         if (!inject.fighter_asset[f]) continue;
         float bones[DOAX_BONES][16];
