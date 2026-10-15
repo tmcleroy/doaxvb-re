@@ -7,6 +7,7 @@
 #include "animation_split_adapter.h"
 #include "animation_probe.h"
 #include "mesh_dump.h"
+#include "costume_inject.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -2070,6 +2071,17 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         }
     }
     capture_command = &command.data.draw;
+    if (command.data.draw.program_count == 0 && recomp_costume_inject_enabled()) {
+        float world[16], view[16], projection[16];
+        if (read_transform(device, D3D_TRANSFORM_WORLD, world) &&
+            read_transform(device, D3D_TRANSFORM_VIEW, view) &&
+            read_transform(device, D3D_TRANSFORM_PROJECTION, projection) &&
+            recomp_costume_inject_draw(recomp_d3d_frame_adapter_swap_counter() + 1u,
+                result.plan.vertex_data, world, view, projection, &command.data.draw)) {
+            ++draw_submitted;
+            goto finished;
+        }
+    }
     {
         const uint32_t present = recomp_d3d_frame_adapter_swap_counter() + 1u;
         if (recomp_mesh_dump_active(present)) {
