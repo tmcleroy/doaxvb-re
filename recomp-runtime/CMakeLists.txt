@@ -559,6 +559,7 @@ if(RECOMP_PROGRAM_DIR)
         d3d_creation_adapter.c
         d3d_draw_model.c
         d3d_draw_adapter.c
+        mesh_dump.c
         d3d_frame_model.c
         d3d_frame_adapter.c
         d3d_vblank.cpp

@@ -6,6 +6,7 @@
 #include "d3d_pose_replay.h"
 #include "animation_split_adapter.h"
 #include "animation_probe.h"
+#include "mesh_dump.h"
 
 #include <inttypes.h>
 #include <errno.h>
@@ -2069,6 +2070,20 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         }
     }
     capture_command = &command.data.draw;
+    {
+        const uint32_t present = recomp_d3d_frame_adapter_swap_counter() + 1u;
+        if (recomp_mesh_dump_active(present)) {
+            float worlds[4][16], view[16], projection[16];
+            uint32_t count = 0u;
+            while (count <= command.data.draw.blend_weight_count && count < 4u &&
+                read_transform(device, D3D_TRANSFORM_WORLD + count, worlds[count])) ++count;
+            bool cameras = read_transform(device, D3D_TRANSFORM_VIEW, view) &&
+                read_transform(device, D3D_TRANSFORM_PROJECTION, projection);
+            recomp_mesh_dump_draw(present, &command.data.draw, result.plan.vertex_data,
+                result.plan.index_data, worlds, count,
+                cameras ? view : NULL, cameras ? projection : NULL);
+        }
+    }
 
     RecompD3dPresenterError presenter_error = recomp_d3d_presenter_submit(
         recomp_d3d_frame_adapter_presenter(), &command);
