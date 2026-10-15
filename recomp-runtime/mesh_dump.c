@@ -1,4 +1,5 @@
 #include "mesh_dump.h"
+#include "runtime.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -61,6 +62,8 @@ bool recomp_mesh_dump_active(uint32_t present)
     return dump.triggered_present == present;
 }
 
+static void write_file(const char *name, const void *bytes, size_t size);
+
 static bool open_present(uint32_t present)
 {
     if (dump.open_present == present) return dump.index != NULL;
@@ -76,6 +79,13 @@ static bool open_present(uint32_t present)
     dump.index = fopen(path, "wb");
     if (dump.index != NULL)
         fprintf(stderr, "recomp mesh dump: writing %s\n", dump.folder);
+    /* Optional guest RAM snapshot, taken before this present's first draw, so
+       bone matrices can be located by value offline. Private data. */
+    const char *ram = getenv("RECOMP_MESH_DUMP_RAM");
+    if (ram != NULL && *ram != '\0' && *ram != '0') {
+        const uint8_t *bytes = recomp_memory(0u, RECOMP_XBOX_RAM_SIZE);
+        if (bytes != NULL) write_file("ram.bin", bytes, RECOMP_XBOX_RAM_SIZE);
+    }
     return dump.index != NULL;
 }
 
@@ -169,6 +179,51 @@ void recomp_mesh_dump_draw(uint32_t present,
     if (projection != NULL) write_matrix("projection", projection);
     write_matrix("transform", draw->transform);
     if (draw->has_texture) write_texture(draw);
+    fprintf(dump.index,
+        ",\"material\":{\"lit\":%s,\"diffuse\":[%.6g,%.6g,%.6g,%.6g],"
+        "\"ambient_emissive\":[%.6g,%.6g,%.6g,%.6g],\"texture_factor\":%u,"
+        "\"use_texture_factor\":%s,\"modulate_texture_factor\":%s,"
+        "\"material_alpha_mode\":%u,\"material_alpha\":%.6g,"
+        "\"blend_src\":%u,\"blend_dst\":%u,\"blend_op\":%u,\"alpha_test\":%s,"
+        "\"alpha_func\":%u,\"alpha_ref\":%u,\"z_func\":%u}",
+        draw->directional.enabled ? "true" : "false",
+        draw->directional.material_diffuse[0], draw->directional.material_diffuse[1],
+        draw->directional.material_diffuse[2], draw->directional.material_diffuse[3],
+        draw->directional.ambient_emissive[0], draw->directional.ambient_emissive[1],
+        draw->directional.ambient_emissive[2], draw->directional.ambient_emissive[3],
+        draw->texture_factor, draw->use_texture_factor ? "true" : "false",
+        draw->modulate_texture_factor ? "true" : "false",
+        (unsigned)draw->material_alpha_mode, draw->material_alpha,
+        (unsigned)draw->blend.src_factor, (unsigned)draw->blend.dst_factor,
+        (unsigned)draw->blend.op, draw->depth.alpha_test_enable ? "true" : "false",
+        (unsigned)draw->depth.alpha_func, draw->depth.alpha_ref, (unsigned)draw->depth.depth_func);
     fputs("}\n", dump.index);
     fflush(dump.index);
+}
+
+void recomp_mesh_dump_palette(uint32_t present, uint32_t bank, uint32_t objects,
+    uint32_t object, unsigned ordinal, uint32_t list, uint32_t recipe_id,
+    const uint8_t recipe[16], const uint8_t object_head[48])
+{
+    if (!recomp_mesh_dump_active(present)) return;
+    static FILE *file;
+    static uint32_t file_present = UINT32_MAX;
+    if (file_present != present) {
+        if (file != NULL) fclose(file);
+        char folder[1024], path[1100];
+        snprintf(folder, sizeof folder, "%s/present-%u", dump.root, present);
+        mesh_dump_mkdir(folder);
+        snprintf(path, sizeof path, "%s/palettes.jsonl", folder);
+        file = fopen(path, "wb");
+        file_present = present;
+    }
+    if (file == NULL) return;
+    fprintf(file, "{\"bank\":%u,\"objects\":%u,\"object\":%u,\"ordinal\":%u,"
+        "\"list\":%u,\"recipe_id\":%u,\"recipe\":\"", bank, objects, object,
+        ordinal, list, recipe_id);
+    for (unsigned i = 0u; i < 16u; ++i) fprintf(file, "%02x", recipe[i]);
+    fputs("\",\"head\":\"", file);
+    for (unsigned i = 0u; i < 48u; ++i) fprintf(file, "%02x", object_head[i]);
+    fputs("\"}\n", file);
+    fflush(file);
 }

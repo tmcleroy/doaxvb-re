@@ -1,4 +1,5 @@
 #include "animation_probe.h"
+#include "mesh_dump.h"
 #include "animation_split_adapter.h"
 
 #ifdef RECOMP_FULL_PROGRAM
@@ -333,6 +334,18 @@ static void build_palette(void)
 {
     recomp_animation_probe_finish_split();
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    if (recomp_mesh_dump_active(frame + 1u)) {
+        uint32_t bank_address = *recomp_memory_u32(recomp_runtime.registers.esp+4u);
+        uint32_t objects = *recomp_memory_u32(*recomp_ebp_register()-4u);
+        uint32_t list = recomp_runtime.registers.esi;
+        unsigned ordinal = *(const uint8_t *)recomp_memory_i8(list);
+        uint32_t object = *recomp_memory_u32(objects+ordinal*4u);
+        uint8_t recipe_bytes[16], head[48];
+        recomp_guest_load(recipe_bytes, 0x0033f988u+recomp_runtime.registers.eax*16u, sizeof recipe_bytes);
+        recomp_guest_load(head, object, sizeof head);
+        recomp_mesh_dump_palette(frame + 1u, bank_address, objects, object, ordinal, list,
+            recomp_runtime.registers.eax, recipe_bytes, head);
+    }
     uint32_t bank = *recomp_memory_u32(recomp_runtime.registers.esp+4u);
     uint32_t offset_address = recomp_runtime.registers.edi;
     uint32_t recipe_id = recomp_runtime.registers.eax;
@@ -800,7 +813,8 @@ RecompFunction recomp_animation_probe_lookup_manual(uint32_t address)
     case 0x000af050u: case 0x000aeef0u: case 0x000af5c0u:
     case 0x000636d0u: case 0x000b01e0u: case 0x00023b10u:
         if (setting("RECOMP_ANIMATION_DISPATCH_TRACE") == NULL &&
-            setting("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0 && !recomp_animation_split_enabled()) return NULL;
+            setting("RECOMP_SKELETON_VERIFY") == NULL && experiment_frame() == 0 && state_capture_frame() == 0 && !recomp_animation_split_enabled() &&
+            !(address == 0x000636d0u && setting("RECOMP_MESH_DUMP") != NULL)) return NULL;
         break;
     default: return NULL;
     }

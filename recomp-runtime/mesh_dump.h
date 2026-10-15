@@ -30,6 +30,11 @@ void recomp_mesh_dump_draw(uint32_t present,
     const float worlds[4][16], uint32_t world_count,
     const float view[16], const float projection[16]);
 
+/* One palette build: which object a recipe drives, for bone binding. */
+void recomp_mesh_dump_palette(uint32_t present, uint32_t bank, uint32_t objects,
+    uint32_t object, unsigned ordinal, uint32_t list, uint32_t recipe_id,
+    const uint8_t recipe[16], const uint8_t object_head[48]);
+
 #ifdef __cplusplus
 }
 #endif
