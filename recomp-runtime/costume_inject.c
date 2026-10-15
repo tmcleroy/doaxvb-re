@@ -29,6 +29,8 @@ typedef struct Part {
     uint8_t *vertices;
     uint16_t *indices;
     float *skinned; /* vertex_count * 8 floats: position, normal, uv */
+    bool has_material;
+    float material[17]; /* source D3DMATERIAL8: diffuse, ambient, specular, emissive, power */
 } Part;
 
 typedef struct Asset {
@@ -50,6 +52,11 @@ static struct {
     Asset assets[FIGHTERS];
     Asset *fighter_asset[FIGHTERS];
     uint32_t injected_present[FIGHTERS];
+    /* Lighting of the fighter's last lit draw: the draw that triggers the
+       replacement may be an unlit part (eyes, effects). */
+    bool have_lit[FIGHTERS];
+    RecompD3dDirectionalLighting lit[FIGHTERS];
+    float lit_material[FIGHTERS][17];
     /* Vertex-data span of each fighter's own draws, by present: props from the
        same loaded model (shoe straps, ribbons) fall inside it. */
     uint32_t span_present[FIGHTERS], span_low[FIGHTERS], span_high[FIGHTERS];
@@ -195,7 +202,7 @@ static bool load(Asset *a, unsigned slot, const char *path)
     char magic[4];
     uint32_t head[4];
     bool ok = read_all(f, magic, 4) && memcmp(magic, "D3C1", 4) == 0 &&
-        read_all(f, head, sizeof head) && head[0] == 2u && head[1] <= 16u;
+        read_all(f, head, sizeof head) && (head[0] == 2u || head[0] == 3u) && head[1] <= 16u;
     if (ok) {
         a->relative_count = head[1];
         for (uint32_t i = 0; ok && i < head[1]; ++i)
@@ -234,6 +241,11 @@ static bool load(Asset *a, unsigned slot, const char *path)
             p->index_count = h[4]; p->texture = (int32_t)h[5]; p->flags = h[6]; p->world_count = h[7];
             for (uint32_t w = 0; ok && w < p->world_count; ++w)
                 ok = read_all(f, &p->bones[w], 4) && read_all(f, p->offsets[w], 64) && p->bones[w] < DOA3_BONES;
+            if (ok && head[0] >= 3u) {
+                uint32_t present_flag = 0;
+                ok = read_all(f, &present_flag, 4) && read_all(f, p->material, sizeof p->material);
+                p->has_material = present_flag != 0;
+            }
             p->vertices = malloc((size_t)p->vertex_count * p->stride + 1);
             p->indices = malloc((size_t)p->index_count * 2 + 2);
             p->skinned = malloc((size_t)p->vertex_count * 32 + 32);
@@ -321,7 +333,28 @@ static void skin(Part *p, float bank[DOA3_BONES][16])
     }
 }
 
-static void submit_fighter(Asset *a, float bank[DOA3_BONES][16], const float view[16], const float projection[16],
+/* The template's lit material is emissive + ambient * scene ambient (plus
+   per-light terms). Recover the scene terms through the template's own raw
+   material and apply them to this part's source material. */
+static float ratio(float value, float template_term, float part_term)
+{
+    return fabsf(template_term) > 1e-4f ? value / template_term * part_term : part_term * 0.0f;
+}
+
+static void relight(RecompD3dDirectionalLighting *l, const float *t, const Part *p)
+{
+    if (!l->enabled || !t || !p->has_material) return;
+    for (unsigned c = 0; c < 3; ++c) {
+        float scene = fabsf(t[4 + c]) > 1e-4f ? (l->ambient_emissive[c] - t[12 + c]) / t[4 + c] : 0.0f;
+        l->ambient_emissive[c] = p->material[12 + c] + p->material[4 + c] * scene;
+        for (unsigned i = 0; i < l->count; ++i)
+            l->ambient[i][c] = ratio(l->ambient[i][c], t[4 + c], p->material[4 + c]);
+
+    }
+    memcpy(l->material_diffuse, p->material, 4 * sizeof(float));
+}
+
+static void submit_fighter(Asset *a, const float *template_material, float bank[DOA3_BONES][16], const float view[16], const float projection[16],
     const RecompD3dPresenterDrawCommand *template_draw)
 {
     float view_projection[16];
@@ -352,6 +385,7 @@ static void submit_fighter(Asset *a, float bank[DOA3_BONES][16], const float vie
         if (d->directional.enabled) {
             memcpy(d->directional.world_transforms[0], identity, sizeof identity);
             memcpy(d->directional.normal_transforms[0], identity, sizeof identity);
+            relight(&d->directional, template_material, p);
         }
         d->has_alpha_mask = false;
         d->has_reflection = false;
@@ -404,7 +438,8 @@ __attribute__((unused)) static void note_span(unsigned f, uint32_t present, uint
 
 bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const float world[16],
     const float view[16], const float projection[16],
-    const RecompD3dPresenterDrawCommand *template_draw)
+    const RecompD3dPresenterDrawCommand *template_draw,
+    const float *template_material)
 {
     (void)vertex_data;
     if (!recomp_costume_inject_enabled()) return false;
@@ -421,11 +456,29 @@ bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const fl
             match = err < 1e-5f && dist < 0.36f;
         }
         if (!match) continue;
+        if (template_draw->directional.enabled && template_material) {
+            inject.lit[f] = template_draw->directional;
+            memcpy(inject.lit_material[f], template_material, sizeof inject.lit_material[f]);
+            inject.have_lit[f] = true;
+        }
         if (inject.injected_present[f] != present) {
             inject.injected_present[f] = present;
+            RecompD3dPresenterDrawCommand lit_template;
+            if (!template_draw->directional.enabled && inject.have_lit[f]) {
+                lit_template = *template_draw;
+                lit_template.directional = inject.lit[f];
+                template_draw = &lit_template;
+                template_material = inject.lit_material[f];
+            }
             float bank[DOA3_BONES][16];
             doa3_bank(inject.fighter_asset[f], bones, bank);
-            submit_fighter(inject.fighter_asset[f], bank, view, projection, template_draw);
+            if (getenv("RECOMP_COSTUME_DEBUG") && present % 300u == 0u)
+                fprintf(stderr, "recomp costume inject: present=%u actor=%u lit=%d cached=%d lights=%u ae=%.3f,%.3f,%.3f mat=%s\n",
+                    present, f, template_draw->directional.enabled, inject.have_lit[f],
+                    template_draw->directional.count, template_draw->directional.ambient_emissive[0],
+                    template_draw->directional.ambient_emissive[1], template_draw->directional.ambient_emissive[2],
+                    template_material ? "yes" : "no");
+            submit_fighter(inject.fighter_asset[f], template_material, bank, view, projection, template_draw);
         }
         return true;
     }

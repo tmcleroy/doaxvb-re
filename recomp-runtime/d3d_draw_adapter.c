@@ -2077,7 +2077,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
             read_transform(device, D3D_TRANSFORM_VIEW, view) &&
             read_transform(device, D3D_TRANSFORM_PROJECTION, projection) &&
             recomp_costume_inject_draw(recomp_d3d_frame_adapter_swap_counter() + 1u,
-                result.plan.vertex_data, world, view, projection, &command.data.draw)) {
+                result.plan.vertex_data, world, view, projection, &command.data.draw,
+                (const float *)(const void *)guest_span(device + 0xab0u, 68u))) {
             ++draw_submitted;
             goto finished;
         }
@@ -2093,7 +2094,8 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
                 read_transform(device, D3D_TRANSFORM_PROJECTION, projection);
             recomp_mesh_dump_draw(present, &command.data.draw, result.plan.vertex_data,
                 result.plan.index_data, worlds, count,
-                cameras ? view : NULL, cameras ? projection : NULL);
+                cameras ? view : NULL, cameras ? projection : NULL,
+                (const float *)(const void *)guest_span(device + 0xab0u, 68u));
         }
     }
 
