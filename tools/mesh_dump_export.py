@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import mmap
+import os
 import struct
 import sys
 from pathlib import Path
@@ -196,10 +197,51 @@ class Archive:
         count = struct.unpack_from("<I", self.data, 4)[0]
         self.entries = [struct.unpack_from("<II", self.data, 8 + 8 * i) for i in range(count)]
 
+        self._order = None
+
+    def _index(self):
+        """Sorted 8-byte keys at every 4-byte-aligned offset (vertex data starts
+        4-byte aligned), cached as an order array beside the exporter's work."""
+        if self._order is not None:
+            return
+        self._words = np.frombuffer(self.data, dtype="<u4", count=len(self.data) // 4)
+        cache = Path(os.environ.get("MESH_DUMP_INDEX_DIR", ".")) / (
+            f"{self.path.name}-{os.path.getsize(self.path)}.afsindex4.npy")
+        if cache.exists():
+            self._order = np.load(cache, mmap_mode="r")
+        else:
+            w = self._words.astype(np.uint64)
+            keys = w[:-1] | (w[1:] << np.uint64(32))
+            self._order = np.argsort(keys, kind="stable").astype(np.uint32)
+            del keys, w
+            np.save(cache, self._order)
+
+    def _key(self, i):
+        return int(self._words[i]) | (int(self._words[i + 1]) << 32)
+
     def locate(self, needle: bytes):
+        if len(needle) >= 16:
+            self._index()
+            key = int.from_bytes(needle[:8], "little")
+            order = self._order
+            lo, hi = 0, len(order)
+            while lo < hi:                       # lower bound
+                mid = (lo + hi) // 2
+                if self._key(int(order[mid])) < key: lo = mid + 1
+                else: hi = mid
+            while lo < len(order) and self._key(int(order[lo])) == key:
+                at = int(order[lo]) * 4
+                if self.data[at:at + len(needle)] == needle:
+                    return self._entry(at)
+                lo += 1
+            if not os.environ.get("MESH_DUMP_FULL_SEARCH"):
+                return None   # file vertex data is 16-byte aligned; misses are CPU-written buffers
         at = self.data.find(needle)
         if at < 0:
             return None
+        return self._entry(at)
+
+    def _entry(self, at):
         for i, (offset, size) in enumerate(self.entries):
             if offset <= at < offset + size:
                 return i, at - offset

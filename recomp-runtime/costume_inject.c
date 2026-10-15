@@ -37,6 +37,14 @@ typedef struct Part {
     float material[17]; /* source D3DMATERIAL8: diffuse, ambient, specular, emissive, power */
     bool has_alpha_test, alpha_test;
     uint32_t alpha_func, alpha_ref;
+    /* Soft part (hair, cloth): spring settings, gravity-hang data and a
+       per-vertex jiggle mask learned from the source's own motion. */
+    bool soft;
+    float soft_params[4];
+    float source_rotation[9];
+    float anchor[3];
+    bool hang;
+    float *mask;
 } Part;
 
 typedef struct Asset {
@@ -62,6 +70,9 @@ static struct {
     bool have_lit[FIGHTERS];
     RecompD3dDirectionalLighting lit[FIGHTERS];
     float lit_material[FIGHTERS][17];
+    float *soft_state[FIGHTERS];
+    float history[FIGHTERS][2][DOA3_BONES][3];
+    uint32_t history_present[FIGHTERS], history_count[FIGHTERS];
     /* Vertex-data span of each fighter's own draws, by present: props from the
        same loaded model (shoe straps, ribbons) fall inside it. */
     uint32_t span_present[FIGHTERS], span_low[FIGHTERS], span_high[FIGHTERS];
@@ -207,7 +218,7 @@ static bool load(Asset *a, unsigned slot, const char *path)
     char magic[4];
     uint32_t head[4];
     bool ok = read_all(f, magic, 4) && memcmp(magic, "D3C1", 4) == 0 &&
-        read_all(f, head, sizeof head) && head[0] >= 2u && head[0] <= 5u && head[1] <= 16u;
+        read_all(f, head, sizeof head) && head[0] >= 2u && head[0] <= 6u && head[1] <= 16u;
     if (ok) {
         a->relative_count = head[1];
         for (uint32_t i = 0; ok && i < head[1]; ++i)
@@ -257,9 +268,15 @@ static bool load(Asset *a, unsigned slot, const char *path)
                 p->has_alpha_test = true; p->alpha_test = t[0] != 0; p->alpha_func = t[1]; p->alpha_ref = t[2];
             }
             if (ok && head[0] >= 4u && (p->flags & 4u)) {
-                /* Soft-part data (physics) is not used on this side yet: skip it. */
-                float params[4];
-                ok = read_all(f, params, sizeof params) && fseek(f, (long)p->vertex_count * 4, SEEK_CUR) == 0;
+                p->soft = true;
+                p->mask = malloc((size_t)p->vertex_count * sizeof(float) + 4);
+                ok = read_all(f, p->soft_params, sizeof p->soft_params);
+                if (ok && head[0] >= 6u) {
+                    ok = read_all(f, p->source_rotation, sizeof p->source_rotation) &&
+                        read_all(f, p->anchor, sizeof p->anchor);
+                    p->hang = ok;
+                }
+                ok = ok && read_all(f, p->mask, (size_t)p->vertex_count * sizeof(float));
             }
             p->vertices = malloc((size_t)p->vertex_count * p->stride + 1);
             p->indices = malloc((size_t)p->index_count * 2 + 2);
@@ -307,7 +324,7 @@ static Asset *pool_get(int index)
     if (index < 0 || (uint32_t)index >= pool.count || pool.failed[index]) return NULL;
     if (!pool.asset[index]) {
         Asset *a = calloc(1, sizeof *a);
-        bool ok = a && load(a, (unsigned)index, pool.path[index]);
+        bool ok = a && load(a, (unsigned)index, pool.path[index]) && a->part_count > 0;
         fprintf(stderr, "recomp costume inject: %s %s (%u parts, %u textures)\n",
             ok ? "loaded" : "failed to load", pool.path[index], a ? a->part_count : 0u, a ? a->texture_count : 0u);
         if (!ok) { pool.failed[index] = true; return NULL; }
@@ -391,20 +408,50 @@ static void poll_keys(uint32_t present)
         pool.choice = pool.choice + 1 >= (int)pool.count ? -1 : pool.choice + 1;
         Asset *a = pool_get(pool.choice);
         for (unsigned f = 0; f < FIGHTERS; ++f)
-            if (inject.fighter_mask & (1u << f)) inject.fighter_asset[f] = a;
+            if (inject.fighter_mask & (1u << f)) {
+                inject.fighter_asset[f] = a;
+                free(inject.soft_state[f]); inject.soft_state[f] = NULL; inject.history_count[f] = 0;
+            }
         fprintf(stderr, "recomp costume inject: all -> %s\n",
             a ? pool.path[pool.choice] : "stock");
     }
     pool.key_down = down;
 }
 
-static void skin(Part *p, float bank[DOA3_BONES][16])
+/* Rodrigues rotation of v about unit axis k (row-vector frame) by angle. */
+static void rotate_axis(float v[3], const float k[3], float angle)
+{
+    float c = cosf(angle), s = sinf(angle);
+    float kv = k[0]*v[0] + k[1]*v[1] + k[2]*v[2];
+    float x[3] = {k[1]*v[2] - k[2]*v[1], k[2]*v[0] - k[0]*v[2], k[0]*v[1] - k[1]*v[0]};
+    for (unsigned i = 0; i < 3; ++i) v[i] = v[i]*c + x[i]*s + k[i]*kv*(1.0f - c);
+}
+
+static void skin(Part *p, float bank[DOA3_BONES][16], const float *soft_offset)
 {
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(p->fvf, &layout)) { p->vertex_count = 0; return; }
     float m[MAX_WORLDS][16];
     for (uint32_t w = 0; w < p->world_count; ++w) multiply(p->offsets[w], bank[p->bones[w]], m[w]);
     const uint32_t weights = layout.blend_weight_count < p->world_count ? layout.blend_weight_count : p->world_count - 1;
+    /* Gravity in the bone's frame now and when the rest shape was captured
+       (world +Y is up in both games); the swing between them is how far the
+       hair must turn about its root to keep hanging. */
+    float hang_axis[3] = {0, 0, 0}, hang_angle = 0.0f;
+    if (p->soft && p->hang) {
+        const float *r = bank[p->bones[0]], *q = p->source_rotation;
+        float now[3] = {r[1], r[5], r[9]}, then[3] = {q[1], q[4], q[7]};
+        float ln = sqrtf(now[0]*now[0]+now[1]*now[1]+now[2]*now[2]);
+        if (ln > 0) for (unsigned c = 0; c < 3; ++c) now[c] /= ln;
+        hang_axis[0] = then[1]*now[2] - then[2]*now[1];
+        hang_axis[1] = then[2]*now[0] - then[0]*now[2];
+        hang_axis[2] = then[0]*now[1] - then[1]*now[0];
+        float sine = sqrtf(hang_axis[0]*hang_axis[0]+hang_axis[1]*hang_axis[1]+hang_axis[2]*hang_axis[2]);
+        float cosine = then[0]*now[0] + then[1]*now[1] + then[2]*now[2];
+        hang_angle = atan2f(sine, cosine);
+        if (sine > 1e-6f) for (unsigned c = 0; c < 3; ++c) hang_axis[c] /= sine;
+        else hang_angle = 0.0f;
+    }
     for (uint32_t v = 0; v < p->vertex_count; ++v) {
         const uint8_t *src = p->vertices + (size_t)v * p->stride;
         float pos[3], nrm[3] = {0, 0, 0}, uv[2] = {0, 0}, wt[MAX_WORLDS] = {1, 0, 0, 0};
@@ -426,10 +473,84 @@ static void skin(Part *p, float bank[DOA3_BONES][16])
                 out[3+c] += wt[k] * (nrm[0]*a[c] + nrm[1]*a[4+c] + nrm[2]*a[8+c]);
             }
         }
+        if (p->soft && p->mask[v] > 0.0f) {
+            /* Redo this vertex in bone-local space: hang toward gravity, then jiggle. */
+            const float w = p->mask[v];
+            const float *o = p->offsets[0], *r = bank[p->bones[0]];
+            float local[3], ln[3];
+            for (unsigned c = 0; c < 3; ++c) {
+                local[c] = pos[0]*o[c] + pos[1]*o[4+c] + pos[2]*o[8+c] + o[12+c];
+                ln[c] = nrm[0]*o[c] + nrm[1]*o[4+c] + nrm[2]*o[8+c];
+            }
+            if (p->hang && hang_angle > 1e-3f) {
+                float d[3] = {local[0]-p->anchor[0], local[1]-p->anchor[1], local[2]-p->anchor[2]};
+                rotate_axis(d, hang_axis, hang_angle * w);
+                rotate_axis(ln, hang_axis, hang_angle * w);
+                for (unsigned c = 0; c < 3; ++c) local[c] = p->anchor[c] + d[c];
+            }
+            if (soft_offset)
+                for (unsigned c = 0; c < 3; ++c) local[c] += w * soft_offset[c];
+            for (unsigned c = 0; c < 3; ++c) {
+                out[c] = local[0]*r[c] + local[1]*r[4+c] + local[2]*r[8+c] + r[12+c];
+                out[3+c] = ln[0]*r[c] + ln[1]*r[4+c] + ln[2]*r[8+c];
+            }
+        }
         float l = sqrtf(out[3]*out[3] + out[4]*out[4] + out[5]*out[5]);
         if (l > 0) for (unsigned c = 3; c < 6; ++c) out[c] /= l;
         out[6] = uv[0]; out[7] = uv[1];
     }
+}
+
+/* One damped spring per soft part, in its bone's frame, pushed opposite to
+   the bone's acceleration (inertia). Two substeps per present at 60 Hz. */
+static void step_soft(unsigned f, Asset *a, float bank[DOA3_BONES][16], uint32_t present)
+{
+    if (!inject.soft_state[f]) inject.soft_state[f] = calloc((size_t)a->part_count * 6u + 6u, sizeof(float));
+    if (inject.history_present[f] + 1u != present) inject.history_count[f] = 0;
+    float (*h)[DOA3_BONES][3] = inject.history[f];
+    const float dt = 1.0f / 60.0f;
+    static float scale = -1.0f;
+    if (scale < 0.0f) {
+        const char *text = getenv("RECOMP_COSTUME_JIGGLE");
+        scale = text ? (float)atof(text) : 0.7f;
+        if (!(scale >= 0.0f)) scale = 1.0f;
+    }
+    for (uint32_t i = 0; i < a->part_count; ++i) {
+        Part *p = &a->parts[i];
+        if (!p->soft) continue;
+        float *s = inject.soft_state[f] + i * 6u, *v = s + 3;
+        const uint32_t b = p->bones[0];
+        float accel[3] = {0, 0, 0}, local[3];
+        if (inject.history_count[f] >= 2u)
+            for (unsigned c = 0; c < 3; ++c)
+                accel[c] = (bank[b][12+c] - 2.0f*h[1][b][c] + h[0][b][c]) / (dt*dt);
+        for (unsigned c = 0; c < 3; ++c)
+            local[c] = accel[0]*bank[b][c*4] + accel[1]*bank[b][c*4+1] + accel[2]*bank[b][c*4+2];
+        const float k = p->soft_params[0], damping = p->soft_params[1], gain = p->soft_params[2] * scale, limit = p->soft_params[3];
+        for (unsigned step = 0; step < 2; ++step) {
+            const float t = dt * 0.5f;
+            for (unsigned c = 0; c < 3; ++c) {
+                v[c] += (-k*s[c] - damping*v[c] - gain*local[c]) * t;
+                s[c] += v[c] * t;
+            }
+        }
+        float len = sqrtf(s[0]*s[0] + s[1]*s[1] + s[2]*s[2]);
+        if (len > limit) for (unsigned c = 0; c < 3; ++c) { s[c] *= limit / len; v[c] *= 0.5f; }
+    }
+    if (getenv("RECOMP_COSTUME_DEBUG") && present % 20u == 0u) {
+        float hair = 0, chest = 0;
+        for (uint32_t i = 0; i < a->part_count; ++i) {
+            if (!a->parts[i].soft) continue;
+            const float *s = inject.soft_state[f] + i * 6u;
+            float len = sqrtf(s[0]*s[0] + s[1]*s[1] + s[2]*s[2]);
+            if (a->parts[i].bones[0] == 1u) hair = fmaxf(hair, len); else chest = fmaxf(chest, len);
+        }
+        fprintf(stderr, "recomp costume physics: present=%u fighter=%u hair=%.4f chest=%.4f\n", present, f, hair, chest);
+    }
+    memcpy(h[0], h[1], sizeof h[0]);
+    for (unsigned b = 0; b < DOA3_BONES; ++b) memcpy(h[1][b], bank[b] + 12, 3 * sizeof(float));
+    if (inject.history_count[f] < 2u) ++inject.history_count[f];
+    inject.history_present[f] = present;
 }
 
 /* The template's lit material is emissive + ambient * scene ambient (plus
@@ -453,7 +574,7 @@ static void relight(RecompD3dDirectionalLighting *l, const float *t, const Part 
     memcpy(l->material_diffuse, p->material, 4 * sizeof(float));
 }
 
-static void submit_fighter(Asset *a, const float *template_material, float bank[DOA3_BONES][16], const float view[16], const float projection[16],
+static void submit_fighter(unsigned fighter, Asset *a, const float *template_material, float bank[DOA3_BONES][16], const float view[16], const float projection[16],
     const RecompD3dPresenterDrawCommand *template_draw)
 {
     float view_projection[16];
@@ -462,7 +583,7 @@ static void submit_fighter(Asset *a, const float *template_material, float bank[
     for (uint32_t i = 0; i < a->part_count; ++i) {
         Part *p = &a->parts[i];
         if (!p->vertex_count || !p->index_count) continue;
-        skin(p, bank);
+        skin(p, bank, p->soft && inject.soft_state[fighter] ? inject.soft_state[fighter] + i * 6u : NULL);
         RecompD3dPresenterCommand command;
         memset(&command, 0, sizeof command);
         command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
@@ -583,7 +704,8 @@ bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const fl
                     template_draw->directional.count, template_draw->directional.ambient_emissive[0],
                     template_draw->directional.ambient_emissive[1], template_draw->directional.ambient_emissive[2],
                     template_material ? "yes" : "no");
-            submit_fighter(inject.fighter_asset[f], template_material, bank, view, projection, template_draw);
+            step_soft(f, inject.fighter_asset[f], bank, present);
+            submit_fighter(f, inject.fighter_asset[f], template_material, bank, view, projection, template_draw);
         }
         return true;
     }
