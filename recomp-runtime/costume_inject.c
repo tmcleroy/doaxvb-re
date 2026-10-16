@@ -508,6 +508,16 @@ static void step_soft(unsigned f, Asset *a, float bank[DOA3_BONES][16], uint32_t
     if (!inject.soft_state[f]) inject.soft_state[f] = calloc((size_t)a->part_count * 6u + 6u, sizeof(float));
     if (inject.history_present[f] + 1u != present) inject.history_count[f] = 0;
     float (*h)[DOA3_BONES][3] = inject.history[f];
+    /* A scene cut or teleport moves the hip further in one frame than any
+       motion does; restart the springs at rest instead of kicking them. */
+    if (inject.history_count[f] >= 1u) {
+        float jump = 0;
+        for (unsigned c = 0; c < 3; ++c) jump += (bank[2][12+c] - h[1][2][c]) * (bank[2][12+c] - h[1][2][c]);
+        if (jump > 0.25f * 0.25f) {
+            inject.history_count[f] = 0;
+            memset(inject.soft_state[f], 0, ((size_t)a->part_count * 6u + 6u) * sizeof(float));
+        }
+    }
     const float dt = 1.0f / 60.0f;
     static float scale = -1.0f;
     if (scale < 0.0f) {
@@ -524,6 +534,9 @@ static void step_soft(unsigned f, Asset *a, float bank[DOA3_BONES][16], uint32_t
         if (inject.history_count[f] >= 2u)
             for (unsigned c = 0; c < 3; ++c)
                 accel[c] = (bank[b][12+c] - 2.0f*h[1][b][c] + h[0][b][c]) / (dt*dt);
+        /* Cap at about 8 g: a single bad sample must not pin the spring at its limit. */
+        float amag = sqrtf(accel[0]*accel[0] + accel[1]*accel[1] + accel[2]*accel[2]);
+        if (amag > 80.0f) for (unsigned c = 0; c < 3; ++c) accel[c] *= 80.0f / amag;
         for (unsigned c = 0; c < 3; ++c)
             local[c] = accel[0]*bank[b][c*4] + accel[1]*bank[b][c*4+1] + accel[2]*bank[b][c*4+2];
         const float k = p->soft_params[0], damping = p->soft_params[1], gain = p->soft_params[2] * scale, limit = p->soft_params[3];
@@ -661,12 +674,26 @@ __attribute__((unused)) static void note_span(unsigned f, uint32_t present, uint
     if (vertex_data > inject.span_high[f]) inject.span_high[f] = vertex_data;
 }
 
+/* Vertex buffers each actor's own draws used (open addressing, never cleared:
+   a girl's model buffers stay hers for the session). */
+enum { LEARNED = 1024 };
+static uint32_t learned_vd[FIGHTERS][LEARNED];
+
+static bool learned(unsigned f, uint32_t vd, bool add)
+{
+    if (!vd) return false;
+    for (uint32_t n = 0, h = (vd * 2654435761u) % LEARNED; n < LEARNED; ++n, h = (h + 1) % LEARNED) {
+        if (learned_vd[f][h] == vd) return true;
+        if (!learned_vd[f][h]) { if (add) learned_vd[f][h] = vd; return false; }
+    }
+    return false;
+}
+
 bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const float world[16],
     const float view[16], const float projection[16],
     const RecompD3dPresenterDrawCommand *template_draw,
     const float *template_material)
 {
-    (void)vertex_data;
     if (!recomp_costume_inject_enabled()) return false;
     poll_keys(present);
     for (unsigned f = 0; f < FIGHTERS; ++f) {
@@ -674,14 +701,24 @@ bool recomp_costume_inject_draw(uint32_t present, uint32_t vertex_data, const fl
         float bones[DOAX_BONES][16];
         recomp_guest_load(bones, BANK_BASE(f), sizeof bones);
         bool match = false;
+        float near_bone = 1e9f;
         for (unsigned i = 0; i < DOAX_BONES && !match; ++i) {
             if (fabsf(bones[i][0]) + fabsf(bones[i][5]) + fabsf(bones[i][10]) < 0.5f) continue;
             float err = 0, dist = 0;
             for (unsigned k = 0; k < 12; ++k) err = fmaxf(err, fabsf(bones[i][k] - world[k]));
             for (unsigned k = 12; k < 15; ++k) dist += (bones[i][k] - world[k]) * (bones[i][k] - world[k]);
-            match = err < 1e-5f && dist < 0.36f;
+            near_bone = fminf(near_bone, dist);
+            /* Exact copy of a bone, or at its origin with a slightly stale rotation. */
+            match = (err < 1e-4f && dist < 0.36f) || (err < 0.06f && dist < 0.0004f);
         }
-        if (!match) continue;
+        if (!match) {
+            /* Helper bones (24-31) are written after some draws, so while the
+               girl moves a part can be a frame behind its bone. A buffer this
+               actor already drew under a matched bone is still hers. */
+            if (vertex_data && near_bone < 0.36f && learned(f, vertex_data, false)) return true;
+            continue;
+        }
+        learned(f, vertex_data, true);
         if (template_draw->directional.enabled && template_material) {
             inject.lit[f] = template_draw->directional;
             memcpy(inject.lit_material[f], template_material, sizeof inject.lit_material[f]);
