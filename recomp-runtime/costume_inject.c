@@ -45,6 +45,7 @@ typedef struct Part {
     float anchor[3];
     bool hang;
     float *mask;
+    uint32_t file_index; /* order in the asset file (parts are re-sorted at load) */
 } Part;
 
 typedef struct Asset {
@@ -250,6 +251,7 @@ static bool load(Asset *a, unsigned slot, const char *path)
         a->parts = calloc(head[3] ? head[3] : 1, sizeof(Part));
         for (uint32_t i = 0; ok && i < head[3]; ++i) {
             Part *p = &a->parts[i];
+            p->file_index = i;
             uint32_t h[8];
             ok = read_all(f, h, sizeof h) && h[7] >= 1u && h[7] <= MAX_WORLDS;
             if (!ok) break;
@@ -598,10 +600,10 @@ static void submit_fighter(unsigned fighter, Asset *a, const float *template_mat
     for (uint32_t i = 0; i < a->part_count; ++i) {
         Part *p = &a->parts[i];
         if (!p->vertex_count || !p->index_count) continue;
-        /* Debug: RECOMP_COSTUME_SKIP=a-b leaves parts a..b out (bisecting a bad part). */
+        /* Debug: RECOMP_COSTUME_SKIP=a-b leaves out asset-file parts a..b (bisecting a bad part). */
         static int skip_lo = -2, skip_hi = -1;
         if (skip_lo == -2) { const char *t = getenv("RECOMP_COSTUME_SKIP"); skip_lo = -1; if (t) sscanf(t, "%d-%d", &skip_lo, &skip_hi); }
-        if ((int)i >= skip_lo && (int)i <= skip_hi) continue;
+        if ((int)p->file_index >= skip_lo && (int)p->file_index <= skip_hi) continue;
         skin(p, bank, p->soft && inject.soft_state[fighter] ? inject.soft_state[fighter] + i * 6u : NULL);
         RecompD3dPresenterCommand command;
         memset(&command, 0, sizeof command);
