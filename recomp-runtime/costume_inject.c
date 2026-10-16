@@ -438,7 +438,9 @@ static void skin(Part *p, float bank[DOA3_BONES][16], const float *soft_offset)
        (world +Y is up in both games); the swing between them is how far the
        hair must turn about its root to keep hanging. */
     float hang_axis[3] = {0, 0, 0}, hang_angle = 0.0f;
-    if (p->soft && p->hang) {
+    static int hang_enabled = -1;
+    if (hang_enabled < 0) { const char *t = getenv("RECOMP_COSTUME_HANG"); hang_enabled = !(t && *t == '0'); }
+    if (p->soft && p->hang && hang_enabled) {
         const float *r = bank[p->bones[0]], *q = p->source_rotation;
         float now[3] = {r[1], r[5], r[9]}, then[3] = {q[1], q[4], q[7]};
         float ln = sqrtf(now[0]*now[0]+now[1]*now[1]+now[2]*now[2]);
@@ -596,6 +598,10 @@ static void submit_fighter(unsigned fighter, Asset *a, const float *template_mat
     for (uint32_t i = 0; i < a->part_count; ++i) {
         Part *p = &a->parts[i];
         if (!p->vertex_count || !p->index_count) continue;
+        /* Debug: RECOMP_COSTUME_SKIP=a-b leaves parts a..b out (bisecting a bad part). */
+        static int skip_lo = -2, skip_hi = -1;
+        if (skip_lo == -2) { const char *t = getenv("RECOMP_COSTUME_SKIP"); skip_lo = -1; if (t) sscanf(t, "%d-%d", &skip_lo, &skip_hi); }
+        if ((int)i >= skip_lo && (int)i <= skip_hi) continue;
         skin(p, bank, p->soft && inject.soft_state[fighter] ? inject.soft_state[fighter] + i * 6u : NULL);
         RecompD3dPresenterCommand command;
         memset(&command, 0, sizeof command);
