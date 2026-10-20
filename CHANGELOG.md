@@ -14,10 +14,39 @@
   random girls in random swimsuits on a random court, one match after
   another until START is pressed. With Default nothing changes. See
   `docs/title-idle.md`.
+- **Unlock swimsuits** (#112). An opt-in launcher option, or
+  `RECOMP_UNLOCK_SWIMSUITS=1`, offers every girl in Exhibition every
+  swimsuit she can wear, 307 of the game's 328. Vacations and saves are left
+  untouched. Off by default, and with it off nothing changes. See
+  `docs/swimsuit-unlock.md`.
 - **Demo cut hold**. A **Shorter demo cuts** launcher option, or
   `RECOMP_DEMO_CUT_HOLD` (1 to 59 frames), shortens the one-second freeze
   between the scenes of the real-time demo. Off by default; the game keeps its
   own 60 frames. See `docs/title-idle.md`.
+- **Free camera**. A **Free camera** launcher option, or
+  `RECOMP_FREE_CAMERA=1`, lets F1 (or a click of the right stick) take
+  over the game's camera and fly it with the keyboard or a controller. While
+  it flies, Start freezes the scene (P pauses the game anywhere, with or
+  without the camera), H or the left shoulder hides the
+  2D overlay and . or the right shoulder steps one frame, for screenshots.
+  [ and ] or the d-pad's left and right play another of the scene's animation
+  clips on a character and hold it, and `\` or the left stick's click picks the
+  character.
+- **Model viewer**. With Free camera on, the main menu has a MODEL VIEWER
+  item. It goes through Exhibition's own character and court select; once
+  the match starts, the free camera comes on in front of Player 1's girl,
+  the scene freezes and the other players and the overlay are hidden.
+  Putting the camera away returns to the main menu. On court select, [ ] or
+  LT/RT choose the time of day (day, sunset or dusk). See
+  `docs/model-viewer.md`.
+- **Screenshots**. With Free camera on, F12 (or Back + A while flying) saves
+  the game's frame, without the overlay panel, as a PNG in Pictures/DOAXBV.
+  With texture replacement on, F12 stays its key and Shift+F12 takes the
+  screenshot.
+- **Overlay panel**. While the free camera flies, a small panel drawn with
+  Dear ImGui (D3D11 on Windows, SDL GPU elsewhere) names the chosen character, shows her
+  animation and freeze state and lists the controls; H hides it with the
+  game's overlay for a clean view. Off by default. See `docs/free-camera.md`.
 
 ### Changed
 
@@ -31,6 +60,16 @@
 
 ### Fixed
 
+- **Depth of field above 480p on macOS and Linux**. The blurred background
+  in the real-time demo and close-ups looked blocky and streaky next to the
+  sharp model on an upscaled frame. The game blurs a 256x256 copy of the
+  frame; the Metal and Vulkan presenter now averages the upscaled frame into
+  that copy and stretches the result back with a smooth filter. The D3D11
+  presenter already averaged the copy.
+- **Scene changes above 480p on macOS and Linux**. The picture the game
+  holds for a moment when it cuts from one scene to the next was a 512x512
+  copy stretched over the screen. The Metal and Vulkan presenter now keeps
+  that copy at the render resolution.
 - **Widescreen window fit** (#119). Above 480p, the borderless window now
   fits inside the screen and is centered, so 16:10 and 4:3 screens no longer
   cut off the right side, and ultrawide screens show the picture in the

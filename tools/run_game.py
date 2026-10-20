@@ -87,9 +87,12 @@ def saved_launcher_settings(root):
                 "RECOMP_D3D_SMAA": "1" if settings.get("smaa") else "0",
                 "RECOMP_AUDIO_GAIN": f"{int(settings.get('volume', 100)) / 100:.4f}",
                 "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0",
+                "RECOMP_UNLOCK_SWIMSUITS": "1" if settings.get("unlock_swimsuits") else "0",
                 "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default",
                 **({"RECOMP_DEMO_CUT_HOLD": DEMO_CUT_HOLD_SHORT}
-                   if settings.get("demo_cut_hold") is True else {})}
+                   if settings.get("demo_cut_hold") is True else {}),
+                **({"RECOMP_FREE_CAMERA": "1"}
+                   if settings.get("free_camera") is True else {})}
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         return {}
 

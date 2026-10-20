@@ -8,6 +8,13 @@ namespace {
 constexpr unsigned kSunMapSize = 4096;
 constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
 
+struct SunCasterLayout {
+    uint32_t fvf;
+    unsigned weights;
+    ID3D11InputLayout *input;
+    ID3D11VertexShader *shader;
+};
+
 struct SunShadow {
     bool enabled = false, valid = false, casting = false;
     unsigned epoch = 0, camera_epoch = 0, triangles = 0, casters = 0, game_shadows = 0;
@@ -25,6 +32,11 @@ struct SunShadow {
     ID3D11Buffer *constants = nullptr;
     ID3D11SamplerState *sampler = nullptr;
     ID3D11RasterizerState *rasterizer = nullptr;
+    // Depth-only caster pipeline, built on first use; pass state binds once per pass.
+    ID3D11Buffer *caster_constants = nullptr;
+    ID3D11PixelShader *caster_alpha = nullptr;
+    std::vector<SunCasterLayout> caster_layouts;
+    bool caster_failed = false, caster_bound = false;
 };
 
 bool sunShadowRequested()
@@ -307,9 +319,16 @@ bool sunSceneDraw(const RecompD3dPresenterDrawCommand &draw, float size[3], bool
         layout.stride > draw.vertex_stride || draw.blend_weight_count > 3 ||
         (draw.blend_weight_count && draw.blend_weight_count != layout.blend_weight_count)) return false;
     float minimum[3] = {INFINITY, INFINITY, INFINITY}, maximum[3] = {-INFINITY, -INFINITY, -INFINITY};
+    // Indexed lists repeat most vertices; transform each referenced one once.
+    thread_local std::vector<uint32_t> seen;
+    thread_local uint32_t stamp;
+    if (seen.size() < draw.vertex_count) seen.resize(draw.vertex_count);
+    if (++stamp == 0) { std::fill(seen.begin(), seen.end(), 0u); stamp = 1; }
     for (unsigned i = 0; i < draw.index_count; ++i) {
         const unsigned v = static_cast<const uint16_t *>(draw.index_bytes)[i];
         if (v >= draw.vertex_count) return false;
+        if (seen[v] == stamp) continue;
+        seen[v] = stamp;
         float vertex[6]{};
         std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v)*draw.vertex_stride,
             (3+draw.blend_weight_count)*sizeof(float));
@@ -421,6 +440,12 @@ bool sunFit(SunShadow &sun)
 
 void sunRelease(SunShadow &sun)
 {
+    for (auto &caster : sun.caster_layouts) {
+        if (caster.input) caster.input->Release();
+        if (caster.shader) caster.shader->Release();
+    }
+    if (sun.caster_alpha) sun.caster_alpha->Release();
+    if (sun.caster_constants) sun.caster_constants->Release();
     if (sun.rasterizer) sun.rasterizer->Release();
     if (sun.sampler) sun.sampler->Release();
     if (sun.constants) sun.constants->Release();
