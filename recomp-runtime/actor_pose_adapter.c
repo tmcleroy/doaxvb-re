@@ -8,7 +8,9 @@
 
 #ifdef RECOMP_FULL_PROGRAM
 #include "runtime.h"
+#include <stdlib.h>
 #include "animation_probe.h"
+#include "d3d_frame_adapter.h"
 
 /* Animation select: plays a chosen clip on a character and holds it.
 
@@ -214,7 +216,9 @@ static void lower_bones(uint32_t actor, float depth)
     }
 }
 
-static void build_skeleton(void)
+static void build_skeleton(void);
+
+static void build_skeleton_inner(void)
 {
     uint32_t actor = recomp_runtime.registers.eax;
     /* Some scenes build skeletons in a task that also draws, which a frozen
@@ -354,6 +358,66 @@ void recomp_actor_pose_release(void)
     fprintf(stderr, "recomp pose: character %u released\n", pose.actor);
 }
 
+/* Pose history: every character's bones after each frame's skeleton build,
+   for the last HISTORY frames, so a frozen scene can step back through them.
+   A frozen scene builds no skeletons, so bones put back stay until it runs. */
+enum { HISTORY = 600u };
+static struct {
+    uint32_t frame[HISTORY];
+    uint8_t bones[HISTORY][ACTOR_COUNT][BONE_COUNT * BONE_SIZE];
+    /* Each character's root block: bones are drawn relative to it. */
+    uint8_t roots[HISTORY][ACTOR_COUNT][ROOT_STRIDE];
+    unsigned newest, count, back;
+} history;
+
+static void record_bones(uint32_t actor)
+{
+    const uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    if (history.count == 0u || history.frame[history.newest] != frame) {
+        history.newest = (history.newest + 1u) % HISTORY;
+        history.frame[history.newest] = frame;
+        if (history.count < HISTORY) ++history.count;
+        /* A new frame starts from the last one's bones for characters not built in it. */
+        const unsigned last = (history.newest + HISTORY - 1u) % HISTORY;
+        if (history.count > 1u) {
+            memcpy(history.bones[history.newest], history.bones[last], sizeof history.bones[0]);
+            memcpy(history.roots[history.newest], history.roots[last], sizeof history.roots[0]);
+        }
+    }
+    history.back = 0u;
+    recomp_guest_load(history.bones[history.newest][actor], bone_of(actor, 0u), BONE_COUNT * BONE_SIZE);
+    recomp_guest_load(history.roots[history.newest][actor], root_of(actor), ROOT_STRIDE);
+}
+
+static void build_skeleton(void)
+{
+    const uint32_t actor = recomp_runtime.registers.eax;
+    const bool skipped = actor < ACTOR_COUNT && recomp_scene_freeze_holding();
+    build_skeleton_inner();
+    if (actor < ACTOR_COUNT && !skipped) record_bones(actor);
+}
+
+unsigned recomp_actor_pose_history_step(int step)
+{
+    if (history.count == 0u) return 0u;
+    int back = (int)history.back - step;
+    if (back < 0) back = 0;
+    if (back > (int)history.count - 1) back = (int)history.count - 1;
+    history.back = (unsigned)back;
+    const unsigned index = (history.newest + HISTORY - history.back) % HISTORY;
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
+        if (!active(actor)) continue;
+        recomp_guest_store(bone_of(actor, 0u), history.bones[index][actor], BONE_COUNT * BONE_SIZE);
+        recomp_guest_store(root_of(actor), history.roots[index][actor], ROOT_STRIDE);
+    }
+    return history.back;
+}
+
+unsigned recomp_actor_pose_history_back(void)
+{
+    return history.back;
+}
+
 void recomp_actor_pose_frame(void)
 {
     if (!pose.holding) return;
@@ -366,6 +430,17 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+unsigned recomp_actor_pose_history_step(int step)
+{
+    (void)step;
+    return 0u;
+}
+
+unsigned recomp_actor_pose_history_back(void)
+{
+    return 0u;
+}
+
 void recomp_actor_pose_next_actor(void)
 {
 }

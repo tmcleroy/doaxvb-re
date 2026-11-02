@@ -50,6 +50,7 @@ typedef enum RecompInputHostKey {
     RECOMP_INPUT_HOST_KEY_2,
     RECOMP_INPUT_HOST_KEY_3,
     RECOMP_INPUT_HOST_KEY_4,
+    RECOMP_INPUT_HOST_KEY_COMMA,
     RECOMP_INPUT_HOST_KEY_COUNT
 } RecompInputHostKey;
 

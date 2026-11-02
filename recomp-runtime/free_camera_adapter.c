@@ -185,6 +185,11 @@ static struct {
     RecompCameraPath path;
     bool playing;
     unsigned play_frames;
+    /* Slow motion froze the scene, and frames shown since its last step. */
+    bool slowed;
+    unsigned slow_frames;
+    bool back_key_held;
+    HeldRepeat pose_repeat;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -366,6 +371,15 @@ static bool any_other_button(const RecompInputGamepad *gamepad)
     return false;
 }
 
+/* Back (step < 0) or forward through the poses of the last frames; forward
+   from the newest runs the scene one frame. Freezes the scene first. */
+static void step_pose(int step)
+{
+    if (!recomp_scene_freeze_active()) recomp_scene_freeze_set(true);
+    if (step < 0 || recomp_actor_pose_history_back() > 0u) recomp_actor_pose_history_step(step);
+    else recomp_scene_freeze_step();
+}
+
 /* Saves the flown view in a spot, or goes to a saved one (for this run). */
 static void use_spot(unsigned spot, bool save)
 {
@@ -427,6 +441,8 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         } else if (steps < 0) {
             state.playing = false;
         }
+    } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE) {
+        step_pose(steps > 0 ? 1 : -1);
     } else if (steps != 0) {
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
@@ -527,8 +543,13 @@ static bool take_sample(const RecompInputGamepad *raw)
     bool step_released;
     int steps = held_repeat(&state.step_repeat, step ? 1 : 0, milliseconds(), &step_released);
     if (steps != 0 || (step && milliseconds() - state.step_repeat.since >= CLIP_FASTER_AFTER_MS)) {
-        recomp_scene_freeze_step();
+        if (recomp_actor_pose_history_back() > 0u) recomp_actor_pose_history_step(1);
+        else recomp_scene_freeze_step();
     }
+    /* , steps the poses back while frozen; held, it keeps going. */
+    bool pose_back = (state.active || paused) && recomp_input_host_key(RECOMP_INPUT_HOST_KEY_COMMA);
+    bool pose_released;
+    if (held_repeat(&state.pose_repeat, pose_back ? -1 : 0, milliseconds(), &pose_released) != 0) step_pose(-1);
 
     uint64_t now = milliseconds();
     bool released;
@@ -1070,6 +1091,26 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     }
 }
 
+/* Slow motion: the scene is frozen and stepped one frame in 2, 4 or 8. */
+static void step_slow_motion(void)
+{
+    const unsigned every = state.active && state.settings_ready ? 1u << state.settings.slow : 1u;
+    if (every > 1u) {
+        if (!state.slowed) {
+            recomp_scene_freeze_set(true);
+            state.slowed = true;
+            state.slow_frames = 0u;
+        }
+        if (++state.slow_frames >= every && recomp_actor_pose_history_back() == 0u) {
+            state.slow_frames = 0u;
+            recomp_scene_freeze_step();
+        }
+    } else if (state.slowed) {
+        recomp_scene_freeze_set(false);
+        state.slowed = false;
+    }
+}
+
 /* The settings hide the ball (in a match) and every character but the
    chosen one while the camera flies; the model viewer does its own hiding. */
 /* The character nearest the middle of the view, by her hips; false for none
@@ -1144,6 +1185,7 @@ void recomp_free_camera_overlay(bool viewer)
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
     effects.recording = state.playing && state.settings.record && state.active;
+    step_slow_motion();
     if (!(state.active && state.started)) {
         effects.hour = -1.0f;
         effects.light_angle = 0.0f;

@@ -42,6 +42,11 @@ bool recomp_actor_pose_focus(float point[3]);
 bool recomp_actor_pose_hips(uint32_t actor, float point[3]);
 /* The level direction the chosen character's hips face. */
 bool recomp_actor_pose_facing(float direction[3]);
+/* Steps back (step < 0) or forward through the characters' poses of the
+   last 600 frames while the scene is frozen, putting their bones back;
+   returns how many frames back the shown pose is (0 the newest). */
+unsigned recomp_actor_pose_history_step(int step);
+unsigned recomp_actor_pose_history_back(void);
 /* Plays the next (step > 0) or previous clip on the chosen character and
    holds it. True when a clip was requested. */
 bool recomp_actor_pose_step_clip(int step);

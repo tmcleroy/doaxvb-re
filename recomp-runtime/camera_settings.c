@@ -139,6 +139,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_RECORD:
         if (steps % 2 != 0) settings->record = !settings->record;
         break;
+    case RECOMP_CAMERA_SETTING_SPEED:
+        settings->slow = clamp_index((int)settings->slow + steps, 4u);
+        break;
     default:
         break;
     }
@@ -232,6 +235,13 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         break;
     case RECOMP_CAMERA_SETTING_RECORD:
         snprintf(text, size, "Record video while the path plays: %s", settings->record ? "On" : "Off");
+        break;
+    case RECOMP_CAMERA_SETTING_SPEED:
+        if (settings->slow == 0u) snprintf(text, size, "Scene speed: normal");
+        else snprintf(text, size, "Scene speed: 1/%u (slow motion)", 1u << settings->slow);
+        break;
+    case RECOMP_CAMERA_SETTING_POSE:
+        snprintf(text, size, "Pose: left steps back, right forward (, and . keys)");
         break;
     case RECOMP_CAMERA_SETTING_BACKGROUND:
         snprintf(text, size, "Screenshot background: %s",

@@ -351,6 +351,8 @@ the sticks, WASD and the right mouse button still fly.
 | Path length | 2 to 60 seconds |
 | Play path | Right plays the path from its first view, left stops |
 | Record video | On: playing the path records it to an MP4 |
+| Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
+| Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -406,6 +408,17 @@ into a ring of three buffers and written two presents later, so the GPU is
 not waited on each frame. ffmpeg comes from `RECOMP_FFMPEG`, or Homebrew's or
 the system's; without it the log says so and nothing is recorded. The game
 steps once a frame, so a slow encoder slows the scene but not the video.
+
+Slow motion freezes the scene and steps it one frame in every 2, 4 or 8
+shown, so the animation is stepped rather than blended; a recorded video
+shows each pose for that many frames. Stepping poses back works on a frozen
+scene: every skeleton build records each character's 32 bones (0x004D3650 +
+n * 0x800) and her root block (0x004D6FF0 + n * 0xBC), which her bones are
+drawn relative to, for the last 600 frames (`recomp_actor_pose_history_step`),
+and stepping back puts a frame's back. A frozen scene builds no skeletons, so
+they stay; stepping forward goes through the history and then runs the scene
+a frame. Only the characters go back: the ball, the camera and everything
+else stay where the newest frame left them.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They
