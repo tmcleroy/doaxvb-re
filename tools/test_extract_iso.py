@@ -127,6 +127,15 @@ class ExtractionTests(unittest.TestCase):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_FREE_CAMERA"), expected)
 
+    def test_saved_sun_shadow_setting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            for saved, expected in (({}, "0"), ({"sun_shadows": False}, "0"),
+                                    ({"sun_shadows": True}, "1"), ({"sun_shadows": "yes"}, "0")):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                self.assertEqual(saved_launcher_settings(root).get("RECOMP_D3D_SUN_SHADOW"), expected)
+
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

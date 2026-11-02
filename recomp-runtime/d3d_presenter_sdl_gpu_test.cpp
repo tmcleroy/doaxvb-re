@@ -351,13 +351,90 @@ static bool testMsaa()
     return passed;
 }
 
+// Two frames with sun shadows on: the first builds the map from a lit caster, the
+// second draws a ground receiver and hides the game's projected shadow.
+static bool testSunShadow()
+{
+    setenv("RECOMP_D3D_SUN_SHADOW", "1", 1);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create with sun shadows", recomp_d3d_presenter_create(&kTestConfig, &presenter));
+    struct Vertex { float x, y, z, nx, ny, nz, u, v; };
+    const Vertex ground[] = {
+        {-8, 0, -8, 0, 1, 0, 0, 0}, {8, 0, -8, 0, 1, 0, 1, 0}, {-8, 0, 8, 0, 1, 0, 0, 1}, {8, 0, 8, 0, 1, 0, 1, 1}};
+    const Vertex post[] = {
+        {-0.2f, 0, 0, 0, 0, -1, 0, 0}, {0.2f, 0, 0, 0, 0, -1, 1, 0}, {-0.2f, 3, 0, 0, 0, -1, 0, 1}, {0.2f, 3, 0, 0, 0, -1, 1, 1}};
+    const uint16_t indices[] = {0, 1, 2, 3};
+    // A camera 10 units back and 4 up, looking down +Z; row-vector D3D matrices.
+    const float view_projection[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.01f, 1, 0, -4, 0.1f, 10};
+    const auto shape = [&](RecompD3dPresenterCommand &command, const Vertex *vertices) {
+        command = {};
+        command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x112u;
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.has_transform = true;
+        std::memcpy(draw.transform, view_projection, sizeof view_projection);
+        std::memcpy(draw.view_projection, view_projection, sizeof view_projection);
+        draw.world[0][0] = draw.world[0][5] = draw.world[0][10] = draw.world[0][15] = 1;
+        draw.sun[0] = 0.3f; draw.sun[1] = 0.9f; draw.sun[3] = 1;
+        draw.directional.enabled = true;
+        draw.directional.count = 1;
+        draw.directional.normal_transforms[0][0] = draw.directional.normal_transforms[0][5] =
+            draw.directional.normal_transforms[0][10] = draw.directional.normal_transforms[0][15] = 1;
+        draw.directional.directions[0][1] = 1;
+        draw.directional.colors[0][0] = draw.directional.colors[0][1] = draw.directional.colors[0][2] = 1;
+        draw.directional.material_diffuse[0] = draw.directional.material_diffuse[1] = draw.directional.material_diffuse[2] = 1;
+        draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+        draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        draw.blend.color_write_mask = 15;
+    };
+    RecompD3dPresenterCommand clear = clearCommand(), ground_cmd, post_cmd, shadow_cmd;
+    clear.data.clear.clear_depth = true;
+    shape(ground_cmd, ground);
+    shape(post_cmd, post);
+    // The game's darkening pass for its projected shadow (see sunGameShadow).
+    shape(shadow_cmd, ground);
+    auto &shadow = shadow_cmd.data.draw;
+    shadow.directional.enabled = false;
+    shadow.use_texture_factor = true;
+    shadow.texture_factor = 0x80000000u;
+    shadow.depth.depth_write_enable = false;
+    shadow.depth.stencil_enable = true;
+    shadow.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+    shadow.depth.stencil_ref = 1;
+    shadow.depth.stencil_read_mask = shadow.depth.stencil_write_mask = 255;
+    shadow.depth.stencil_pass = RECOMP_D3D_STENCIL_ZERO;
+    shadow.blend.blend_enable = true;
+    shadow.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+    shadow.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+    RecompD3dPresenterCommand present{};
+    present.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+    for (uint32_t frame = 1u; frame <= 2u; ++frame) {
+        passed &= expect("sun clear", recomp_d3d_presenter_submit(presenter, &clear));
+        passed &= expect("sun ground", recomp_d3d_presenter_submit(presenter, &ground_cmd));
+        passed &= expect("sun caster", recomp_d3d_presenter_submit(presenter, &post_cmd));
+        passed &= expect("sun game shadow", recomp_d3d_presenter_submit(presenter, &shadow_cmd));
+        present.data.present = {5u, frame};
+        passed &= expect("sun present", recomp_d3d_presenter_submit(presenter, &present));
+    }
+    passed &= expect("destroy with sun shadows", recomp_d3d_presenter_destroy(&presenter));
+    unsetenv("RECOMP_D3D_SUN_SHADOW");
+    if (passed) std::puts("PASS testSunShadow");
+    return passed;
+}
+
 int main()
 {
     // Run tests headless so no windows pop up during CI / test runs
     setenv("RECOMP_HEADLESS", "1", 1);
     recomp_d3d_presenter_set_immediate_present(false);
 
-    if (!testCreateAndTicks() || !testDraw() || !testMsaa() || !testClose()) {
+    if (!testCreateAndTicks() || !testDraw() || !testMsaa() || !testSunShadow() || !testClose()) {
         std::fprintf(stderr, "SDL_GPU presenter tests failed!\n");
         return 1;
     }

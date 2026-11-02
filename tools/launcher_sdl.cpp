@@ -20,7 +20,7 @@ namespace {
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
 constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 100, kRowGap = 28;
-constexpr float kButtonY = kFirstRowY + 8 * kRowGap + 12, kButtonW = 194, kButtonH = 30;
+constexpr float kButtonY = kFirstRowY + 9 * kRowGap + 8, kButtonW = 194, kButtonH = 30;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
@@ -29,11 +29,12 @@ const int kVolumes[] = {100, 75, 50, 25, 0};
 const char *const kIdleValues[] = {"default", "no-cutscene", "cpu-exhibition"};
 const char *const kIdleNames[] = {"Default", "No cutscene", "CPU Exhibition"};
 
-enum Item { RESOLUTION, MSAA, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, PLAY, QUIT, ITEM_COUNT };
+enum Item { RESOLUTION, MSAA, SUN_SHADOWS, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, PLAY, QUIT, ITEM_COUNT };
 
 struct Settings {
     int height = 0;
     int msaa = 1;
+    bool sun_shadows = false;
     int volume = 100;
     bool shuffle = false;
     bool unlock_swimsuits = false;
@@ -68,6 +69,7 @@ Settings loadSettings(const std::string &path)
     std::string value;
     if (jsonValue(text, "height", value)) settings.height = std::atoi(value.c_str());
     if (jsonValue(text, "msaa", value)) settings.msaa = std::atoi(value.c_str());
+    if (jsonValue(text, "sun_shadows", value)) settings.sun_shadows = value == "true";
     if (jsonValue(text, "volume", value)) settings.volume = std::atoi(value.c_str());
     if (jsonValue(text, "shuffle", value)) settings.shuffle = value == "true";
     if (jsonValue(text, "unlock_swimsuits", value)) settings.unlock_swimsuits = value == "true";
@@ -85,7 +87,8 @@ bool saveSettings(const std::string &path, const Settings &settings)
 {
     std::ofstream file(path, std::ios::trunc);
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
-         << ",\n  \"smaa\": false,\n  \"volume\": " << settings.volume
+         << ",\n  \"smaa\": false,\n  \"sun_shadows\": " << (settings.sun_shadows ? "true" : "false")
+         << ",\n  \"volume\": " << settings.volume
          << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false")
          << ",\n  \"unlock_swimsuits\": " << (settings.unlock_swimsuits ? "true" : "false")
          << ",\n  \"demo_cut_hold\": " << (settings.demo_cut ? "true" : "false")
@@ -110,7 +113,7 @@ SDL_FRect itemRect(int item)
 
 struct Launcher {
     SDL_Renderer *renderer = nullptr;
-    int choice[8] = {};
+    int choice[9] = {};
     int selected = PLAY;
 
     std::string valueText(int item) const
@@ -130,7 +133,7 @@ struct Launcher {
     void change(int item, int step)
     {
         static const int counts[] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2,
+            static_cast<int>(std::size(kSamples)), 2, static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2,
             static_cast<int>(std::size(kIdleValues))};
         if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
@@ -177,7 +180,7 @@ struct Launcher {
         centered(56, "XTREME BEACH VOLLEYBALL", kText, 2);
         centered(82, "Native port settings", kMuted);
 
-        static const char *labels[] = {"Resolution", "Anti-aliasing", "Volume", "Shuffle music",
+        static const char *labels[] = {"Resolution", "Anti-aliasing", "Sun shadows", "Volume", "Shuffle music",
             "Unlock swimsuits", "Shorter demo cuts", "Free camera", "Title screen idle"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
@@ -273,6 +276,7 @@ int main(int argc, char **argv)
     launcher.choice[UNLOCK] = settings.unlock_swimsuits ? 1 : 0;
     launcher.choice[DEMO_CUT] = settings.demo_cut ? 1 : 0;
     launcher.choice[FREE_CAMERA] = settings.free_camera ? 1 : 0;
+    launcher.choice[SUN_SHADOWS] = settings.sun_shadows ? 1 : 0;
     launcher.choice[IDLE] = settings.idle;
 
     int result = -1;
@@ -363,6 +367,7 @@ int main(int argc, char **argv)
         settings.unlock_swimsuits = launcher.choice[UNLOCK] != 0;
         settings.demo_cut = launcher.choice[DEMO_CUT] != 0;
         settings.free_camera = launcher.choice[FREE_CAMERA] != 0;
+        settings.sun_shadows = launcher.choice[SUN_SHADOWS] != 0;
         settings.idle = launcher.choice[IDLE];
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());

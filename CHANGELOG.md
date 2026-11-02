@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Sun shadows on macOS and Linux.** The **Sun shadows** launcher option
+  (`RECOMP_D3D_SUN_SHADOW=1`) now works on the Metal and Vulkan presenter as
+  well. It uses the same selection, casters, receivers and overlay rules as
+  Direct3D 11, but builds the map at present from that frame's casters, so
+  shadows trail their casters by one frame. See `docs/sun-shadow.md`.
+
 ## 0.6.0 Beta — 2026-10-27
 
 0.6.0 builds on RC1. Windows setup no longer needs Visual Studio, the

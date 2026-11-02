@@ -1,7 +1,10 @@
 # Experimental directional sun shadows
 
-Set `RECOMP_D3D_SUN_SHADOW=1` before launching the D3D11 runner, or tick **Sun
-shadows** in `Launcher.cmd`; leave it off on lower-powered PCs. Unset, `0`,
+Set `RECOMP_D3D_SUN_SHADOW=1` before launching the runner, or tick **Sun
+shadows** in the launcher (`Launcher.cmd` on Windows, the macOS and Linux
+launchers elsewhere); leave it off on lower-powered machines. The rules below
+are D3D11's; [macOS and Linux](#macos-and-linux-sdl_gpu) share them with one
+difference in timing. Unset, `0`,
 and other values retain the existing shaders, depth allocation and draw path;
 no shadow GPU resources or prepasses are created. This is a visual experiment,
 not a calibrated replacement for the game's lighting.
@@ -162,3 +165,37 @@ pass: decals bent over uneven sand can pass the ordinary scenery bounds test.
 Only palm overlays lose color writes in the visible pass; net/post overlays
 retain their original rendering. The same classification is used by both
 passes, without hashing payloads again for each cast.
+
+## macOS and Linux (SDL_GPU)
+
+The Metal and Vulkan presenter uses the same rules, kept in
+`recomp-runtime/d3d_sun_shadow_model.h`: camera selection, casters, receivers,
+the game-shadow and palm-overlay matches, and the net/post texture edit. The
+4096-square D32 map, its 64-unit box, the 25-tap comparison filter, the
+normal offsets and the 100/2 depth bias are the same as on D3D11.
+
+The difference is timing. This presenter draws each command as it arrives and
+has no frame packet to replay, so it cannot build the map before the frame's
+receivers draw. Instead it keeps each caster's geometry while the frame is
+drawn, fits the box to that frame's selected camera at present, and draws the
+casters into the map then. The next frame's receivers read it, so shadows
+trail their casters by one frame (16.7 ms at 60 fps).
+
+Because the map belongs to the previous camera, a receiver tests that its
+camera is near the map's (near-plane centres within 3 units, view directions
+within about 20 degrees) instead of D3D11's exact match. A moving camera
+keeps its shadows; a cut, a reflection or a portrait camera does not receive,
+and the game's own shadow stays for that frame. The game's projected shadow
+is hidden under the same test.
+
+Draws that D3D11 casts through its full draw shader (alpha masks, four-tap
+filters, framebuffer textures and alpha tests without a sampled texture) do
+not cast here. Depth clamp falls back to clipping where the GPU lacks it.
+Shadows off creates no map and leaves every shader as before; on, every
+fixed-function shader carries the sun block and binds the map in sampler
+slot 2.
+
+Checked on an M-series Mac (Metal) only, by matched attract-demo frames with
+the option on and off: character, ball, post and palm shadows replace the
+game's flat shadows on the beach courts at day and sunset, and the demo held
+60 fps. Vulkan has not run yet.

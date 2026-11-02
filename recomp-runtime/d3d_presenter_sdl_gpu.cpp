@@ -13,6 +13,7 @@
 #endif
 
 #include <algorithm>
+#include <initializer_list>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -27,6 +28,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "d3d_sun_shadow_model.h"
 
 namespace {
 
@@ -74,7 +77,119 @@ struct TransformUniforms {
 struct ProgramConstants {
     float4 vc[192];
 };
+
+struct SunUniforms {
+    float4x4 projection;
+    float4 flags;
+    float4 light;
+    float4x4 world[4];
+};
 )";
+
+// Sun shadow visibility, ported from sunShaderSource (d3d_sun_shadow.h): 25 comparison
+// taps spaced by the pixel's footprint in the map, receiver-plane depth on flat ground,
+// faded over the outer tenth of the box.
+constexpr char kMslSunVisibility[] = R"(
+static float sun_visibility(depth2d<float> map, sampler smp, constant SunUniforms &sun,
+                            float3 p, float soft, bool plane) {
+    float3 q = (sun.projection * float4(p, 1.0)).xyz;
+    float2 uv = q.xy * float2(0.5, -0.5) + 0.5;
+    float2 dx = dfdx(uv), dy = dfdy(uv);
+    float2 dz = float2(dfdx(q.z), dfdy(q.z));
+    float2 footprint = abs(dx) + abs(dy);
+    if (any(abs(q.xy) >= 1.0) || q.z <= 0.0 || q.z >= 1.0) return 1.0;
+    const float texel = 1.0 / 4096.0;
+    float2 spacing = clamp(footprint / 5.0, soft * texel, max(soft, 2.0) * texel);
+    float determinant = dx.x * dy.y - dx.y * dy.x;
+    float2 slope = plane && abs(determinant) > 1e-12 ?
+        float2(dy.y * dz.x - dx.y * dz.y, dx.x * dz.y - dy.x * dz.x) / determinant : float2(0.0);
+    float bias = 0.0002 + dot(abs(slope), float2(texel));
+    float visibility = 0.0;
+    for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 5; ++x) {
+            float2 offset = (float2(x, y) - 2.0) * spacing;
+            visibility += map.sample_compare(smp, uv + offset, q.z + dot(slope, offset) - bias, level(0));
+        }
+    visibility /= 25.0;
+    return mix(1.0, visibility, saturate((1.0 - max(abs(q.x), abs(q.y))) * 10.0));
+}
+)";
+
+constexpr char kGlslSunVisibility[] = R"(
+float sun_visibility(vec3 p, float soft, bool plane) {
+    vec3 q = (sun.projection * vec4(p, 1.0)).xyz;
+    vec2 uv = q.xy * vec2(0.5, -0.5) + 0.5;
+    vec2 dx = dFdx(uv), dy = dFdy(uv);
+    vec2 dz = vec2(dFdx(q.z), dFdy(q.z));
+    vec2 footprint = abs(dx) + abs(dy);
+    if (any(greaterThanEqual(abs(q.xy), vec2(1.0))) || q.z <= 0.0 || q.z >= 1.0) return 1.0;
+    const float texel = 1.0 / 4096.0;
+    vec2 spacing = clamp(footprint / 5.0, vec2(soft * texel), vec2(max(soft, 2.0) * texel));
+    float determinant = dx.x * dy.y - dx.y * dy.x;
+    vec2 slope = plane && abs(determinant) > 1e-12 ?
+        vec2(dy.y * dz.x - dx.y * dz.y, dx.x * dz.y - dy.x * dz.x) / determinant : vec2(0.0);
+    float bias = 0.0002 + dot(abs(slope), vec2(texel));
+    float visibility = 0.0;
+    for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 5; ++x) {
+            vec2 offset = (vec2(x, y) - 2.0) * spacing;
+            visibility += textureLod(sun_map, vec3(uv + offset, q.z + dot(slope, offset) - bias), 0.0);
+        }
+    visibility /= 25.0;
+    return mix(1.0, visibility, clamp((1.0 - max(abs(q.x), abs(q.y))) * 10.0, 0.0, 1.0));
+}
+)";
+
+// Receivers darken by the game's own shadow opacity. Models look up from half a unit
+// toward the sun with a wide filter and no normal term; ground offsets along its normal.
+constexpr char kSunApply[] = R"(    if (sun.flags.x > 0.5) {
+        VEC3 sn = SUN_NORMAL;
+        sn *= dot(sn, sn) > 0.0 ? inversesqrt(dot(sn, sn)) : 0.0;
+        float ndl = dot(sn, sun.light.xyz);
+        float visibility = sun.flags.w > 0.5 ?
+            SUN_VISIBILITY(SUN_WORLD + sun.light.xyz * 0.5, 6.0, false) :
+            SUN_VISIBILITY(SUN_WORLD + sn * (0.04 + 0.03 * (1.0 - clamp(ndl, 0.0, 1.0))), 0.6, true);
+        shaded.rgb *= 1.0 - sun.flags.y * (1.0 - visibility);
+    }
+)";
+
+std::string sunApplySource(bool msl)
+{
+    std::string s = kSunApply;
+    const auto swap = [&s](const std::string &from, const std::string &to) {
+        for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+            s.replace(at, from.size(), to);
+    };
+    swap("VEC3", msl ? "float3" : "vec3");
+    swap("SUN_NORMAL", msl ? "in.sun_normal" : "v_sun_normal");
+    swap("SUN_WORLD", msl ? "in.sun_world" : "v_sun_world");
+    swap("SUN_VISIBILITY(", msl ? "sun_visibility(sun_map, sun_sampler, sun, " : "sun_visibility(");
+    if (msl) swap("inversesqrt", "rsqrt");
+    return s;
+}
+
+// World position of a vertex for the sun lookup, blended like its clip position.
+std::string sunWorldSource(const RecompD3dVertexLayout &layout, bool msl)
+{
+    const std::string out = msl ? "out.sun_world" : "v_sun_world";
+    const std::string position = msl ? "float4(in.position, 1.0)" : "vec4(in_position, 1.0)";
+    const std::string weights = msl ? "in.weights" : "in_weights";
+    std::string s = "    " + out + " = (sun.world[0] * " + position + ").xyz;\n";
+    s += msl ? "    out.sun_normal = float3(0.0);\n" : "    v_sun_normal = vec3(0.0);\n";
+    if (layout.blend_weight_count == 0u) return s;
+    s += "    if (u.blend_flags.x > 0.5) {\n";
+    s += msl ? "        float3 w = float3(0.0);\n" : "        vec3 w = vec3(0.0);\n";
+    s += "        float remainder = 1.0;\n";
+    for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
+        const std::string weight = layout.blend_weight_count == 1u ? weights : weights + "[" + std::to_string(i) + "]";
+        s += "        w += " + weight + " * (sun.world[" + std::to_string(i) + "] * " + position + ").xyz;\n";
+        s += "        remainder -= " + weight + ";\n";
+    }
+    s += "        w += remainder * (sun.world[" + std::to_string(layout.blend_weight_count) + "] * " + position + ").xyz;\n";
+    s += "        " + out + " = w;\n";
+    s += "    }\n";
+    return s;
+}
 
 struct TextureEntry {
     bool used = false;
@@ -85,6 +200,7 @@ struct TextureEntry {
     uint32_t mip_levels = 0;
     uint8_t palette[kPaletteBytes]{};
     uint64_t fingerprint = 0;
+    SunOverlay sun_overlay = SunOverlay::None;
     SDL_GPUTexture *texture = nullptr;
 };
 
@@ -94,6 +210,7 @@ struct RenderTargetEntry {
     // Host size; a held-frame target is larger than its guest size.
     uint32_t width = 0;
     uint32_t height = 0;
+    SunPalmTarget sun_palm;
 };
 
 struct DepthTargetEntry {
@@ -244,6 +361,9 @@ struct QueuedDraw {
     uint32_t vs_uniform_size = 0;
     uint32_t fs_uniform_size = 0;
     uint32_t program_offset = 0;
+    // Sun shadow uniforms in the segment's uniform data; kNoProgramConstants when the
+    // draw's shader has no sun block (shadows off, vertex programs).
+    uint32_t sun_offset = 0;
 };
 
 struct DrawSegment {
@@ -319,6 +439,55 @@ struct PipelineKey {
                dst_factor == o.dst_factor &&
                blend_op == o.blend_op;
     }
+};
+
+// Floats in the sun block pushed to vertex and fragment uniform slot 1: the map's
+// projection, flags (receive, game shadow opacity, -, model), the toward-sun vector
+// and the bone world matrices that place the receiver in the world.
+constexpr uint32_t kSunUniformFloats = 88u;
+
+// One draw kept for the caster pass at present. Geometry is copied, because guest
+// buffers change before then; textures are host cache entries (sunForgetTexture
+// drops a caster whose texture is released first).
+struct SunCasterDraw {
+    uint32_t fvf = 0, stride = 0, weights = 0, index_count = 0;
+    uint32_t vertex_offset = 0, index_offset = 0;
+    uint32_t texcoord_offset = RECOMP_D3D_FVF_ABSENT;
+    bool strip = false, alpha_test = false;
+    unsigned epoch = 0;
+    float view_projection[16]{};
+    float world[4][16]{};
+    float alpha[4]{}; // linear texture scale xy, compare function, reference
+    SDL_GPUTexture *texture = nullptr;
+    SDL_GPUSampler *sampler = nullptr;
+};
+
+/* Sun shadows on SDL_GPU (RECOMP_D3D_SUN_SHADOW=1). The D3D11 worker replays a
+   finished frame to build the map before the visible pass; this presenter draws
+   each command as it arrives, so the map is built at present from the frame's
+   casters and read by the next frame's receivers (one frame of caster lag). */
+struct SdlSunShadow : SunCamera {
+    bool enabled = false;
+    // The map drawn at the last present is usable by this frame's receivers.
+    bool valid = false;
+    float map_projection[16]{}, map_direction[3]{}, map_eye[3]{}, map_forward[3]{};
+    unsigned map_epoch = 0;
+    // Game shadow opacity (texture-factor alpha) seen last frame; 0 when the game drew none.
+    float game_alpha = 0, seen_alpha = 0;
+    unsigned casters_drawn = 0, game_shadows = 0, prop_shadows = 0, receivers = 0, far_receivers = 0;
+    std::vector<SunCasterDraw> casters;
+    std::vector<uint8_t> vertex_data, index_data;
+    SDL_GPUTexture *map = nullptr;
+    SDL_GPUSampler *sampler = nullptr;
+    SDL_GPUBuffer *vertex_buffer = nullptr, *index_buffer = nullptr;
+    SDL_GPUTransferBuffer *vertex_transfer = nullptr, *index_transfer = nullptr;
+    uint32_t vertex_capacity = 0, index_capacity = 0;
+    std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline *> pipelines;
+    std::vector<SDL_GPUShader *> shaders;
+    bool depth_clamp = true;
+    // Receiver camera test, cached for the run of draws that share one camera.
+    float tested_camera[16]{};
+    bool tested_near = false;
 };
 
 struct PipelineKeyHash {
@@ -411,6 +580,8 @@ struct RecompD3dPresenter {
     // Consecutive draws usually share a pipeline; skip the map lookup.
     PipelineKey last_pkey{};
     SDL_GPUGraphicsPipeline *last_pipeline = nullptr;
+
+    SdlSunShadow sun;
 };
 
 inline uint32_t mainHeight(const RecompD3dPresenter *p) {
@@ -645,9 +816,14 @@ bool ensureDynamicBuffers(RecompD3dPresenter *presenter, uint32_t req_vbytes, ui
     return true;
 }
 
+void sunForgetTexture(RecompD3dPresenter *presenter, SDL_GPUTexture *texture);
+
+/* sun_overlay (shadows on only) reports a legacy shadow overlay: a palm silhouette
+   target or texture, or one of the net/post overlays whose posts now cast instead. */
 SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw,
-                               bool minify_backbuffer = false)
+                               bool minify_backbuffer = false, SunOverlay *sun_overlay = nullptr)
 {
+    if (sun_overlay) *sun_overlay = SunOverlay::None;
     const RecompD3dTextureDesc &desc = draw.texture;
     if (!draw.has_texture || desc.data == 0u || desc.width == 0u || desc.height == 0u) {
         return nullptr;
@@ -679,6 +855,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
 
     RenderTargetEntry *rt = findRenderTarget(presenter, desc);
     if (rt && rt->texture) {
+        if (sun_overlay && sunPalmTexture(desc) && rt->sun_palm.valid()) *sun_overlay = SunOverlay::Palm;
         return rt->texture;
     }
 
@@ -705,6 +882,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
             (!palettized || std::memcmp(entry.palette, draw.palette_bytes, kPaletteBytes) == 0)) {
             if (fingerprinted && entry.fingerprint != fingerprint) {
                 unindexTexture(presenter, it->second);
+                sunForgetTexture(presenter, entry.texture);
                 if (entry.texture) SDL_ReleaseGPUTexture(presenter->device, entry.texture);
                 entry.used = false;
                 break;
@@ -734,6 +912,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
                     SDL_ReleaseGPUTransferBuffer(presenter->device, tbuf);
                 }
             }
+            if (sun_overlay) *sun_overlay = entry.sun_overlay;
             return entry.texture;
         }
     }
@@ -748,6 +927,25 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     std::vector<uint8_t> unswizzled;
     const void *upload_bytes = draw.texture_bytes;
     uint32_t upload_size = draw.texture_byte_count;
+
+    // Classified as d3d_presenter_d3d11.cpp does on upload; see docs/sun-shadow.md.
+    SunOverlay overlay = SunOverlay::None;
+    if (presenter->sun.enabled && desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT5) {
+        if (draw.texture_byte_count == recomp_d3d_texture_compressed_mip_span(&desc))
+            overlay = sunStaticOverlay(desc, sunPropPayloadHash(draw.texture_bytes, draw.texture_byte_count));
+        if (overlay == SunOverlay::None &&
+            sunShadowTexels(desc, static_cast<const uint8_t *>(draw.texture_bytes), draw.texture_byte_count)) {
+            overlay = SunOverlay::Palm;
+            std::fprintf(stderr, "recomp sun shadow: legacy tree overlay data=0x%08X size=%ux%u mips=%u\n",
+                desc.data, desc.width, desc.height, levels);
+        }
+        if (overlay == SunOverlay::NetPost) {
+            const auto *bytes = static_cast<const uint8_t *>(draw.texture_bytes);
+            unswizzled.assign(bytes, bytes + draw.texture_byte_count);
+            sunKeepNetLine(desc, unswizzled.data(), levels);
+            upload_bytes = unswizzled.data();
+        }
+    }
 
     if (linear_bgra) {
         const size_t packed_size = static_cast<size_t>(desc.width) * desc.height * 4u;
@@ -839,6 +1037,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     TextureEntry &entry = presenter->textures[slot];
     if (entry.used) {
         unindexTexture(presenter, slot);
+        sunForgetTexture(presenter, entry.texture);
         if (entry.texture) SDL_ReleaseGPUTexture(presenter->device, entry.texture);
     }
     entry.used = true;
@@ -848,17 +1047,20 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     entry.height = desc.height;
     entry.mip_levels = levels;
     entry.fingerprint = fingerprint;
+    entry.sun_overlay = overlay;
     entry.texture = gpu_tex;
     if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
 
     presenter->texture_index.insert({desc.data, slot});
     presenter->next_texture_slot = (presenter->next_texture_slot + 1u) % kTextureSlots;
     if (presenter->texture_count < kTextureSlots) ++presenter->texture_count;
+    if (sun_overlay) *sun_overlay = overlay;
     return gpu_tex;
 }
 
 std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
-                           uint32_t program_count, const uint32_t (*program_tokens)[4])
+                           uint32_t program_count, const uint32_t (*program_tokens)[4],
+                           bool sun = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -908,12 +1110,18 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     if (program_count) {
         s += "    float2 program_q [[user(prog_q)]];\n";
     }
+    if (sun) {
+        s += "    float3 sun_world [[user(sun_world)]];\n";
+        s += "    float3 sun_normal [[user(sun_normal)]];\n";
+    }
     s += "};\n";
 
     // vs_main
     s += program_count
         ? "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]],\n"
           "                    constant ProgramConstants &pc [[buffer(1)]]) {\n"
+        : sun ? "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]],\n"
+                "                    constant SunUniforms &sun [[buffer(1)]]) {\n"
         : "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]]) {\n";
     s += "    VSOut out;\n";
 
@@ -954,6 +1162,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
             s += "    out.position = u.wvp[0] * float4(in.position, 1.0);\n";
         }
 
+        if (sun) s += sunWorldSource(layout, true);
+
         // Color & lighting
         if (has_diffuse) {
             s += "    out.color = in.diffuse.zyxw;\n";
@@ -977,6 +1187,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                 s += "        }\n";
             }
             s += "        if (u.directional_flags.y > 0.5 && dot(n, n) > 0.0) n = normalize(n);\n";
+            if (sun) s += "        out.sun_normal = n;\n";
             s += "        float3 rgb = u.directional_base.rgb;\n";
             s += "        uint light_cnt = uint(u.directional_flags.z);\n";
             s += "        for (uint i = 0; i < light_cnt; ++i) {\n";
@@ -1046,13 +1257,22 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
         s += "}\n";
     }
 
+    if (sun) s += kMslSunVisibility;
+
     // ps_main
     s += "fragment float4 ps_main(VSOut in [[stage_in]],\n";
     s += "                        constant TransformUniforms &u [[buffer(0)]],\n";
+    if (sun) s += "                        constant SunUniforms &sun [[buffer(1)]],\n";
     s += "                        texture2d<float> guest_texture [[texture(0)]],\n";
     s += "                        sampler guest_sampler [[sampler(0)]],\n";
     s += "                        texture2d<float> alpha_mask [[texture(1)]],\n";
-    s += "                        sampler mask_sampler [[sampler(1)]]) {\n";
+    if (sun) {
+        s += "                        sampler mask_sampler [[sampler(1)]],\n";
+        s += "                        depth2d<float> sun_map [[texture(2)]],\n";
+        s += "                        sampler sun_sampler [[sampler(2)]]) {\n";
+    } else {
+        s += "                        sampler mask_sampler [[sampler(1)]]) {\n";
+    }
     if (program_count) {
         s += "    in.texcoord /= in.program_q.x;\n";
         s += "    if (u.reflection_flags.z > 0.5) in.reflection_coord /= in.program_q.y;\n";
@@ -1097,6 +1317,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= alpha_mask.sample(mask_sampler, in.reflection_coord, bias(u.reflection_flags.w)).a;\n";
     s += "    }\n";
+    if (sun) s += sunApplySource(true);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(saturate(shaded.a) * 255.0);\n";
     s += "        float ref = u.draw_flags.w;\n";
@@ -1160,8 +1381,25 @@ layout(set = 3, binding = 0, std140) uniform TransformUniforms {
 } u;
 )";
 
+constexpr char kGlslSunUniforms[] = R"(
+layout(set = SET, binding = 1, std140) uniform SunUniforms {
+    mat4 projection;
+    vec4 flags;
+    vec4 light;
+    mat4 world[4];
+} sun;
+)";
+
+std::string glslSunUniforms(bool fragment)
+{
+    std::string s = kGlslSunUniforms;
+    s.replace(s.find("SET"), 3, fragment ? "3" : "1");
+    return s;
+}
+
 std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
-                                  uint32_t program_count, const uint32_t (*program_tokens)[4])
+                                  uint32_t program_count, const uint32_t (*program_tokens)[4],
+                                  bool sun = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -1176,6 +1414,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
     if (program_count) {
         s += "layout(set = 1, binding = 1, std140) uniform ProgramConstants { vec4 vc[192]; } pc;\n";
     }
+    if (sun) s += glslSunUniforms(false);
 
     if (layout.pretransformed) {
         s += "layout(location = 0) in vec4 in_position;\n";
@@ -1214,6 +1453,10 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
     }
     if (program_count) {
         s += "layout(location = 6) out vec2 v_program_q;\n";
+    }
+    if (sun) {
+        s += "layout(location = 7) out vec3 v_sun_world;\n";
+        s += "layout(location = 8) out vec3 v_sun_normal;\n";
     }
 
     s += "void main() {\n";
@@ -1255,6 +1498,8 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
             s += "    gl_Position = u.wvp[0] * vec4(in_position, 1.0);\n";
         }
 
+        if (sun) s += sunWorldSource(layout, false);
+
         // Color & lighting
         if (has_diffuse) {
             s += "    v_color = in_diffuse.zyxw;\n";
@@ -1278,6 +1523,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
                 s += "        }\n";
             }
             s += "        if (u.directional_flags.y > 0.5 && dot(n, n) > 0.0) n = normalize(n);\n";
+            if (sun) s += "        v_sun_normal = n;\n";
             s += "        vec3 rgb = u.directional_base.rgb;\n";
             s += "        uint light_cnt = uint(u.directional_flags.z);\n";
             s += "        for (uint i = 0u; i < light_cnt; ++i) {\n";
@@ -1328,7 +1574,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
 }
 
 std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
-                                    uint32_t program_count)
+                                    uint32_t program_count, bool sun = false)
 {
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
     const bool four_coords = (layout.texcoord_count == 4u);
@@ -1352,6 +1598,13 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     }
     if (program_count) {
         s += "layout(location = 6) in vec2 v_program_q;\n";
+    }
+    if (sun) {
+        s += glslSunUniforms(true);
+        s += "layout(set = 2, binding = 2) uniform sampler2DShadow sun_map;\n";
+        s += "layout(location = 7) in vec3 v_sun_world;\n";
+        s += "layout(location = 8) in vec3 v_sun_normal;\n";
+        s += kGlslSunVisibility;
     }
 
     s += "layout(location = 0) out vec4 out_color;\n";
@@ -1421,6 +1674,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= texture(alpha_mask, refl_tc, u.reflection_flags.w).a;\n";
     s += "    }\n";
+    if (sun) s += sunApplySource(false);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(clamp(shaded.a, 0.0, 1.0) * 255.0);\n";
     s += "        float ref = u.draw_flags.w;\n";
@@ -1527,6 +1781,12 @@ static std::vector<uint32_t> compileGlslToSpirv(const std::string &source, SDL_G
 }
 #endif
 
+// Shadows off, vertex programs and pretransformed draws keep the shaders unchanged.
+bool sunShader(const RecompD3dPresenter *presenter, const RecompD3dVertexLayout &layout, uint32_t program_count)
+{
+    return presenter->sun.enabled && !program_count && !layout.pretransformed;
+}
+
 // Failures are cached too, so a shader that cannot build is not retried on every draw.
 // The boot-shader thread may finish the same key first; keep its pair and drop ours.
 ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, ShaderPair pair)
@@ -1556,13 +1816,15 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     }
     // The D3D11 presenter accepts vertex programs only with this FVF.
     if (program_count && fvf != 0x112u) return rememberShaderPair(presenter, shader_key, {});
+    // Every draw of a sun shader pushes the sun block and binds the map (sunShader).
+    const bool sun = sunShader(presenter, layout, program_count);
 
     if (presenter->use_spirv) {
-        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens);
+        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens, sun);
         if (vs_source.empty()) return rememberShaderPair(presenter, shader_key, {});
         const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
         const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
-            buildGlslFragmentShader(layout, fvf, program_count), SDL_GPU_SHADERSTAGE_FRAGMENT);
+            buildGlslFragmentShader(layout, fvf, program_count, sun), SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (vs_spv.empty() || fs_spv.empty()) {
             std::fprintf(stderr, "[presenter] failed to compile GLSL->SPIR-V shader fvf=0x%08X\n", fvf);
             return rememberShaderPair(presenter, shader_key, {});
@@ -1578,7 +1840,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         vs_info.entrypoint = "main";
         vs_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
         vs_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
-        vs_info.num_uniform_buffers = program_count ? 2 : 1;
+        vs_info.num_uniform_buffers = program_count || sun ? 2 : 1;
         SDL_GPUShader *vs = SDL_CreateGPUShader(presenter->device, &vs_info);
 
         SDL_GPUShaderCreateInfo fs_info{};
@@ -1587,8 +1849,8 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         fs_info.entrypoint = "main";
         fs_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
         fs_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-        fs_info.num_samplers = 2;
-        fs_info.num_uniform_buffers = 1;
+        fs_info.num_samplers = sun ? 3 : 2;
+        fs_info.num_uniform_buffers = sun ? 2 : 1;
         SDL_GPUShader *fs = SDL_CreateGPUShader(presenter->device, &fs_info);
 
         if (!vs || !fs) {
@@ -1601,7 +1863,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         return rememberShaderPair(presenter, shader_key, {vs, fs});
     }
 
-    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens);
+    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens, sun);
     if (msl.empty()) return rememberShaderPair(presenter, shader_key, {});
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
@@ -1609,7 +1871,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     vs_info.entrypoint = "vs_main";
     vs_info.format = SDL_GPU_SHADERFORMAT_MSL;
     vs_info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
-    vs_info.num_uniform_buffers = program_count ? 2 : 1;
+    vs_info.num_uniform_buffers = program_count || sun ? 2 : 1;
     SDL_GPUShader *vs = SDL_CreateGPUShader(presenter->device, &vs_info);
 
     SDL_GPUShaderCreateInfo fs_info{};
@@ -1618,8 +1880,8 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     fs_info.entrypoint = "ps_main";
     fs_info.format = SDL_GPU_SHADERFORMAT_MSL;
     fs_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    fs_info.num_samplers = 2;
-    fs_info.num_uniform_buffers = 1;
+    fs_info.num_samplers = sun ? 3 : 2;
+    fs_info.num_uniform_buffers = sun ? 2 : 1;
     SDL_GPUShader *fs = SDL_CreateGPUShader(presenter->device, &fs_info);
 
     if (!vs || !fs) {
@@ -1933,6 +2195,8 @@ void flushSegment(RecompD3dPresenter *presenter)
         SDL_GPUSampler *last_s0 = nullptr;
         SDL_GPUTexture *last_t1 = nullptr;
         SDL_GPUSampler *last_s1 = nullptr;
+        uint32_t last_sun_offset = kNoProgramConstants;
+        bool last_sun_bound = false;
         // Wider than the values they track, so the first draw always sets them.
         uint64_t last_constant_color = UINT64_MAX;
         int last_stencil_ref = -1;
@@ -1974,6 +2238,22 @@ void flushSegment(RecompD3dPresenter *presenter)
                 SDL_PushGPUFragmentUniformData(cmdbuf, 0, &seg.uniform_data[q.uniform_offset], q.fs_uniform_size * sizeof(float));
                 last_fs_offset = q.uniform_offset;
                 last_fs_size = q.fs_uniform_size;
+            }
+
+            const bool sun_draw = q.sun_offset != kNoProgramConstants;
+            if (sun_draw && q.sun_offset != last_sun_offset) {
+                const float *block = &seg.uniform_data[q.sun_offset];
+                SDL_PushGPUVertexUniformData(cmdbuf, 1, block, kSunUniformFloats * sizeof(float));
+                SDL_PushGPUFragmentUniformData(cmdbuf, 1, block, kSunUniformFloats * sizeof(float));
+                last_sun_offset = q.sun_offset;
+                last_program_offset = UINT32_MAX;
+            }
+            // A program draw since the last sun draw may have replaced vertex slot 1.
+            if (q.program_offset != kNoProgramConstants) last_sun_offset = kNoProgramConstants;
+            if (sun_draw && !last_sun_bound) {
+                SDL_GPUTextureSamplerBinding map{presenter->sun.map, presenter->sun.sampler};
+                SDL_BindGPUFragmentSamplers(rpass, 2, &map, 1);
+                last_sun_bound = true;
             }
 
             SDL_GPUTexture *t0 = q.texture ? q.texture : presenter->dummy_texture;
@@ -2088,12 +2368,513 @@ RenderTargetEntry *acquireRenderTarget(
     blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
     blit.filter = SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(getCommandBuffer(presenter), &blit);
+    sunForgetTexture(presenter, entry->texture);
     SDL_ReleaseGPUTexture(presenter->device, entry->texture);
     presenter->target_bytes += bytes - held;
     entry->texture = texture;
     entry->width = width;
     entry->height = height;
     return entry;
+}
+
+// ---- Sun shadows (RECOMP_D3D_SUN_SHADOW=1); the rules are shared with D3D11 in
+// d3d_sun_shadow_model.h, and docs/sun-shadow.md describes them.
+
+// The map's camera: the near-plane centre and view direction, as sunFit places its box.
+bool sunViewRay(const float inverse[16], float near_point[3], float forward[3])
+{
+    const float *m = inverse;
+    const float w0 = m[15], w1 = 0.5f * m[11] + m[15];
+    if (std::fabs(w0) < 1e-6f || std::fabs(w1) < 1e-6f) return false;
+    for (unsigned i = 0; i < 3; ++i) {
+        near_point[i] = m[12 + i] / w0;
+        forward[i] = (0.5f * m[8 + i] + m[12 + i]) / w1 - near_point[i];
+    }
+    return sunNormalize(forward);
+}
+
+/* The map was fitted to last frame's camera, so a receiver tests nearness instead of
+   D3D11's exact match: a moving camera still receives, while a cut, a reflection or a
+   portrait camera does not. ponytail: thresholds by eye; tighten if a cut slips through. */
+bool sunNearCamera(SdlSunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
+{
+    if (std::memcmp(sun.tested_camera, draw.view_projection, sizeof sun.tested_camera) == 0)
+        return sun.tested_near;
+    std::memcpy(sun.tested_camera, draw.view_projection, sizeof sun.tested_camera);
+    float inverse[16], eye[3], forward[3];
+    sun.tested_near = false;
+    if (!sunInverse(draw.view_projection, inverse) || !sunViewRay(inverse, eye, forward)) return false;
+    float distance = 0, facing = 0;
+    for (unsigned i = 0; i < 3; ++i) {
+        distance += (eye[i] - sun.map_eye[i]) * (eye[i] - sun.map_eye[i]);
+        facing += forward[i] * sun.map_forward[i];
+    }
+    sun.tested_near = distance < 9.0f && facing > 0.94f;
+    return sun.tested_near;
+}
+
+bool sunSameMatrix(const float a[16], const float b[16])
+{
+    for (unsigned i = 0; i < 16; ++i)
+        if (!std::isfinite(a[i]) || std::fabs(a[i] - b[i]) > 1e-4f * (1 + std::fabs(b[i]))) return false;
+    return true;
+}
+
+void sunForgetTexture(RecompD3dPresenter *presenter, SDL_GPUTexture *texture)
+{
+    if (texture == nullptr) return;
+    for (auto &caster : presenter->sun.casters)
+        if (caster.texture == texture) caster.index_count = 0;
+}
+
+void sunRelease(RecompD3dPresenter *presenter)
+{
+    auto &sun = presenter->sun;
+    for (auto &pair : sun.pipelines)
+        if (pair.second) SDL_ReleaseGPUGraphicsPipeline(presenter->device, pair.second);
+    for (SDL_GPUShader *shader : sun.shaders) SDL_ReleaseGPUShader(presenter->device, shader);
+    if (sun.vertex_buffer) SDL_ReleaseGPUBuffer(presenter->device, sun.vertex_buffer);
+    if (sun.index_buffer) SDL_ReleaseGPUBuffer(presenter->device, sun.index_buffer);
+    if (sun.vertex_transfer) SDL_ReleaseGPUTransferBuffer(presenter->device, sun.vertex_transfer);
+    if (sun.index_transfer) SDL_ReleaseGPUTransferBuffer(presenter->device, sun.index_transfer);
+    if (sun.sampler) SDL_ReleaseGPUSampler(presenter->device, sun.sampler);
+    if (sun.map) SDL_ReleaseGPUTexture(presenter->device, sun.map);
+    sun = SdlSunShadow{};
+}
+
+// The map and its comparison sampler exist whenever shadows are on, because every sun
+// shader binds them; a failure turns shadows off before any shader is built.
+bool sunCreate(RecompD3dPresenter *presenter)
+{
+    auto &sun = presenter->sun;
+    const SDL_GPUTextureUsageFlags usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    if (SDL_GPUTextureSupportsFormat(presenter->device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+            SDL_GPU_TEXTURETYPE_2D, usage)) {
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        info.usage = usage;
+        info.width = info.height = kSunMapSize;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        sun.map = SDL_CreateGPUTexture(presenter->device, &info);
+    }
+    SDL_GPUSamplerCreateInfo sampler{};
+    sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_LINEAR;
+    sampler.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    // No border mode in SDL_GPU; the shader's range test lights everything outside the box.
+    sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w =
+        SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler.enable_compare = true;
+    sampler.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    sun.sampler = SDL_CreateGPUSampler(presenter->device, &sampler);
+    if (!sun.map || !sun.sampler) {
+        std::fprintf(stderr, "recomp sun shadow: resource creation failed; disabled\n");
+        sunRelease(presenter);
+        return false;
+    }
+    sun.enabled = true;
+    std::fprintf(stderr, "recomp sun shadow: %ux%u D32 comparison map (SDL_GPU, one frame behind)\n",
+        kSunMapSize, kSunMapSize);
+    return true;
+}
+
+// Keeps a caster's geometry and state for the map pass at present.
+void sunRecordCaster(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw,
+    const RecompD3dVertexLayout &layout, SDL_GPUTexture *texture)
+{
+    auto &sun = presenter->sun;
+    // Blended casters cut out at half alpha.
+    const bool blended = draw.blend.blend_enable;
+    const RecompD3dCompareFunc func = blended ? RECOMP_D3D_COMPARE_GREATER : draw.depth.alpha_func;
+    const bool alpha_test = (blended || draw.depth.alpha_test_enable) && func != RECOMP_D3D_COMPARE_ALWAYS;
+    // shortcut: D3D11 casts these through its full draw shader; here they do not cast.
+    if (draw.primitive_type == RECOMP_D3D_PT_LINELIST || draw.has_alpha_mask || draw.four_tap_filter ||
+        draw.texture_is_backbuffer || draw.texture_is_frontbuffer || draw.vertex_stride > 255u ||
+        (alpha_test && (texture == nullptr || layout.texcoord_offset == RECOMP_D3D_FVF_ABSENT))) return;
+    SunCasterDraw caster;
+    caster.fvf = draw.fvf;
+    caster.stride = draw.vertex_stride;
+    caster.weights = draw.blend_weight_count;
+    caster.texcoord_offset = alpha_test ? layout.texcoord_offset : RECOMP_D3D_FVF_ABSENT;
+    caster.strip = draw.primitive_type == RECOMP_D3D_PT_TRIANGLESTRIP;
+    caster.alpha_test = alpha_test;
+    caster.epoch = sun.epoch;
+    std::memcpy(caster.view_projection, draw.view_projection, sizeof caster.view_projection);
+    std::memcpy(caster.world, draw.world, sizeof caster.world);
+    caster.alpha[0] = draw.texture.linear && draw.texture.width ? 1.0f / draw.texture.width : 1.0f;
+    caster.alpha[1] = draw.texture.linear && draw.texture.height ? 1.0f / draw.texture.height : 1.0f;
+    caster.alpha[2] = static_cast<float>(func);
+    caster.alpha[3] = blended ? 127.0f : static_cast<float>(draw.depth.alpha_ref);
+    if (alpha_test) {
+        caster.texture = texture;
+        caster.sampler = lookupDrawSampler(presenter, draw.address_u, draw.address_v);
+    }
+    auto align = [](std::vector<uint8_t> &data) { data.resize((data.size() + 15u) & ~size_t(15u), 0); };
+    align(sun.vertex_data);
+    caster.vertex_offset = static_cast<uint32_t>(sun.vertex_data.size());
+    const auto *vertices = static_cast<const uint8_t *>(draw.vertex_bytes);
+    sun.vertex_data.insert(sun.vertex_data.end(), vertices, vertices + size_t(draw.vertex_stride) * draw.vertex_count);
+    align(sun.index_data);
+    caster.index_offset = static_cast<uint32_t>(sun.index_data.size());
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    if (draw.primitive_type == RECOMP_D3D_PT_TRIANGLEFAN) {
+        for (uint32_t t = 0u; t < draw.triangle_count; ++t) {
+            const uint16_t fan[3] = {indices[0], indices[t + 1u], indices[t + 2u]};
+            const auto *b = reinterpret_cast<const uint8_t *>(fan);
+            sun.index_data.insert(sun.index_data.end(), b, b + sizeof fan);
+        }
+        caster.index_count = draw.triangle_count * 3u;
+    } else {
+        const auto *b = reinterpret_cast<const uint8_t *>(indices);
+        sun.index_data.insert(sun.index_data.end(), b, b + size_t(draw.index_count) * 2u);
+        caster.index_count = draw.index_count;
+    }
+    sun.casters.push_back(caster);
+}
+
+/* Per draw: hide the game's own projected shadow and legacy palm overlays while a map
+   covers this camera. Returns true when the draw should keep only its stencil and
+   depth effects (colour writes off). */
+bool sunHideDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    auto &sun = presenter->sun;
+    if (draw.target.offscreen) return false;
+    if (sunGameShadow(draw)) {
+        sun.seen_alpha = (std::max)(sun.seen_alpha, (draw.texture_factor >> 24) / 255.0f);
+        if (sun.valid && sun.game_alpha > 0 && sun.epoch == sun.map_epoch && sunNearCamera(sun, draw)) {
+            ++sun.game_shadows;
+            return true;
+        }
+        return false;
+    }
+    if (sun.valid && sunOverlayDraw(draw)) {
+        SunOverlay overlay = SunOverlay::None;
+        if (prepareTexture(presenter, draw, false, &overlay) && overlay == SunOverlay::Palm) {
+            ++sun.prop_shadows;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Per draw with a sun shader: camera selection and casters for this frame's map, and
+   the receiver block that reads last frame's map. */
+void sunObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw,
+    const RecompD3dVertexLayout &layout, SDL_GPUTexture *texture, SunOverlay overlay, float block[kSunUniformFloats])
+{
+    auto &sun = presenter->sun;
+    std::memset(block, 0, kSunUniformFloats * sizeof(float));
+    const bool scene = !draw.target.offscreen && !draw.target.no_depth;
+    bool model = draw.blend_weight_count != 0u;
+    if (scene) {
+        sunSelectCamera(sun, draw);
+        float size[3];
+        bool net = false;
+        if (sunSceneDraw(draw, size, &net)) {
+            // A terrain-following shadow decal can pass the scenery bounds test.
+            const bool casts = overlay == SunOverlay::None && !net && sunCaster(draw, size);
+            model = model || casts || (std::max)({size[0], size[1], size[2]}) <= 4;
+            if (casts) sunRecordCaster(presenter, draw, layout, texture);
+        }
+    }
+    const bool lit_ground = layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
+        layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && draw.directional.enabled;
+    const bool lit_model = model && lit_ground;
+    // Grass and its sand fringe are unlit with baked vertex colors; shadows must cross onto them too.
+    const bool unlit_ground = !draw.directional.enabled && draw.depth.depth_write_enable &&
+        (!draw.blend.blend_enable || (draw.blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+         draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA));
+    const bool candidate = sun.valid && scene && sun.game_alpha > 0 &&
+        (((lit_ground || unlit_ground) && !model) || lit_model);
+    const bool receive = candidate && sun.epoch == sun.map_epoch && sunNearCamera(sun, draw);
+    sun.receivers += receive;
+    sun.far_receivers += candidate && !receive;
+    std::memcpy(block, sun.map_projection, sizeof sun.map_projection);
+    block[16] = receive ? 1.0f : 0.0f;
+    block[17] = sun.game_alpha;
+    block[19] = lit_model ? 1.0f : 0.0f;
+    for (unsigned i = 0; i < 3; ++i) block[20 + i] = -sun.map_direction[i];
+    std::memcpy(block + 24, draw.world, sizeof draw.world);
+}
+
+// Depth-only caster shaders: bones already carry the sun projection; cutouts test
+// level-0 texture alpha against the draw's own comparison.
+std::string sunCasterVertexSource(const SunCasterDraw &c, bool msl)
+{
+    const bool texcoord = c.texcoord_offset != RECOMP_D3D_FVF_ABSENT;
+    const char *types_msl[] = {"", "float", "float2", "float3"};
+    const char *types_glsl[] = {"", "float", "vec2", "vec3"};
+    std::string s;
+    std::string position, weights, out_position;
+    if (msl) {
+        s = "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct CasterUniforms { float4x4 bones[4]; float4 alpha; };\n"
+            "struct VSIn {\n    float3 position [[attribute(0)]];\n";
+        if (c.weights) s += std::string("    ") + types_msl[c.weights] + " weights [[attribute(1)]];\n";
+        if (texcoord) s += "    float2 texcoord [[attribute(4)]];\n";
+        s += "};\nstruct VSOut { float4 position [[position]]; float2 texcoord [[user(uv0)]]; };\n"
+             "vertex VSOut vs_main(VSIn in [[stage_in]], constant CasterUniforms &c [[buffer(0)]]) {\n"
+             "    VSOut out;\n    float4 p = float4(in.position, 1.0);\n";
+        position = "c.bones";
+        weights = "in.weights";
+        out_position = "out.position";
+        s += texcoord ? "    out.texcoord = in.texcoord;\n" : "    out.texcoord = float2(0.0);\n";
+    } else {
+        s = "#version 450\nlayout(set = 1, binding = 0, std140) uniform CasterUniforms { mat4 bones[4]; vec4 alpha; } c;\n"
+            "layout(location = 0) in vec3 in_position;\n";
+        if (c.weights) s += std::string("layout(location = 1) in ") + types_glsl[c.weights] + " in_weights;\n";
+        if (texcoord) s += "layout(location = 4) in vec2 in_texcoord;\n";
+        s += "layout(location = 0) out vec2 v_texcoord;\nvoid main() {\n    vec4 p = vec4(in_position, 1.0);\n";
+        position = "c.bones";
+        weights = "in_weights";
+        out_position = "gl_Position";
+        s += texcoord ? "    v_texcoord = in_texcoord;\n" : "    v_texcoord = vec2(0.0);\n";
+    }
+    if (!c.weights) {
+        s += "    " + out_position + " = c.bones[0] * p;\n";
+    } else {
+        s += "    " + out_position + " = " + (msl ? "float4(0.0)" : "vec4(0.0)") + ";\n    float remainder = 1.0;\n";
+        for (uint32_t i = 0u; i < c.weights; ++i) {
+            const std::string w = c.weights == 1u ? weights : weights + "[" + std::to_string(i) + "]";
+            s += "    " + out_position + " += " + w + " * (c.bones[" + std::to_string(i) + "] * p);\n";
+            s += "    remainder -= " + w + ";\n";
+        }
+        s += "    " + out_position + " += remainder * (c.bones[" + std::to_string(c.weights) + "] * p);\n";
+    }
+    s += msl ? "    return out;\n}\n" : "}\n";
+    return s;
+}
+
+std::string sunCasterFragmentSource(bool alpha_test, bool msl)
+{
+    const std::string compare =
+        "    bool alpha_pass = func == 7 ||\n"
+        "        (func == 1 && alpha < ref) || (func == 2 && alpha == ref) ||\n"
+        "        (func == 3 && alpha <= ref) || (func == 4 && alpha > ref) ||\n"
+        "        (func == 5 && alpha != ref) || (func == 6 && alpha >= ref);\n";
+    if (msl) {
+        if (!alpha_test) return "#include <metal_stdlib>\nusing namespace metal;\nfragment void ps_main() {}\n";
+        return "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct CasterUniforms { float4x4 bones[4]; float4 alpha; };\n"
+            "struct VSOut { float4 position [[position]]; float2 texcoord [[user(uv0)]]; };\n"
+            "fragment void ps_main(VSOut in [[stage_in]], constant CasterUniforms &c [[buffer(0)]],\n"
+            "                      texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
+            "    float alpha = round(saturate(t.sample(s, in.texcoord * c.alpha.xy, level(0)).a) * 255.0);\n"
+            "    float ref = c.alpha.w;\n    int func = int(c.alpha.z);\n" + compare +
+            "    if (!alpha_pass) discard_fragment();\n}\n";
+    }
+    if (!alpha_test) return "#version 450\nvoid main() {}\n";
+    return "#version 450\nlayout(set = 3, binding = 0, std140) uniform CasterUniforms { mat4 bones[4]; vec4 alpha; } c;\n"
+        "layout(set = 2, binding = 0) uniform sampler2D t;\nlayout(location = 0) in vec2 v_texcoord;\n"
+        "void main() {\n"
+        "    float alpha = round(clamp(textureLod(t, v_texcoord * c.alpha.xy, 0.0).a, 0.0, 1.0) * 255.0);\n"
+        "    float ref = c.alpha.w;\n    int func = int(c.alpha.z);\n" + compare +
+        "    if (!alpha_pass) discard;\n}\n";
+}
+
+SDL_GPUShader *sunCreateShader(RecompD3dPresenter *presenter, const std::string &source,
+    SDL_GPUShaderStage stage, uint32_t samplers, uint32_t uniforms)
+{
+    SDL_GPUShaderCreateInfo info{};
+    std::vector<uint32_t> spirv;
+    if (presenter->use_spirv) {
+        spirv = compileGlslToSpirv(source, stage);
+        if (spirv.empty()) return nullptr;
+        info.code = reinterpret_cast<const Uint8 *>(spirv.data());
+        info.code_size = spirv.size() * sizeof(uint32_t);
+        info.entrypoint = "main";
+        info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    } else {
+        info.code = reinterpret_cast<const Uint8 *>(source.c_str());
+        info.code_size = source.size();
+        info.entrypoint = stage == SDL_GPU_SHADERSTAGE_VERTEX ? "vs_main" : "ps_main";
+        info.format = SDL_GPU_SHADERFORMAT_MSL;
+    }
+    info.stage = stage;
+    info.num_samplers = samplers;
+    info.num_uniform_buffers = uniforms;
+    SDL_GPUShader *shader = SDL_CreateGPUShader(presenter->device, &info);
+    if (shader) presenter->sun.shaders.push_back(shader);
+    else std::fprintf(stderr, "recomp sun shadow: caster shader failed: %s\n", SDL_GetError());
+    return shader;
+}
+
+SDL_GPUGraphicsPipeline *sunCasterPipeline(RecompD3dPresenter *presenter, const SunCasterDraw &c)
+{
+    auto &sun = presenter->sun;
+    const uint64_t key = uint64_t(c.fvf) | uint64_t(c.stride) << 32 | uint64_t(c.weights) << 40 |
+        uint64_t(c.strip) << 42 | uint64_t(c.alpha_test) << 43 |
+        uint64_t(c.texcoord_offset & 0xffu) << 44;
+    const auto found = sun.pipelines.find(key);
+    if (found != sun.pipelines.end()) return found->second;
+    SDL_GPUGraphicsPipeline *&pipeline = sun.pipelines[key];
+    const bool msl = !presenter->use_spirv;
+    SDL_GPUShader *vs = sunCreateShader(presenter, sunCasterVertexSource(c, msl), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    SDL_GPUShader *fs = vs ? sunCreateShader(presenter, sunCasterFragmentSource(c.alpha_test, msl),
+        SDL_GPU_SHADERSTAGE_FRAGMENT, c.alpha_test ? 1 : 0, c.alpha_test ? 1 : 0) : nullptr;
+    if (!vs || !fs) return nullptr;
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vs;
+    info.fragment_shader = fs;
+    info.primitive_type = c.strip ? SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    // As D3D11: bias 100 / slope 2, and clamp instead of clip so fronds nearer the
+    // sun than the box still occlude.
+    info.rasterizer_state.enable_depth_bias = true;
+    info.rasterizer_state.depth_bias_constant_factor = 100.0f;
+    info.rasterizer_state.depth_bias_slope_factor = 2.0f;
+    info.rasterizer_state.enable_depth_clip = !sun.depth_clamp;
+    info.depth_stencil_state.enable_depth_test = true;
+    info.depth_stencil_state.enable_depth_write = true;
+    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    info.target_info.num_color_targets = 0;
+    info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+    info.target_info.has_depth_stencil_target = true;
+    SDL_GPUVertexBufferDescription buffer{};
+    buffer.slot = 0;
+    buffer.pitch = c.stride;
+    buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    SDL_GPUVertexAttribute attributes[3]{};
+    Uint32 count = 0;
+    attributes[count++] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
+    if (c.weights) {
+        const SDL_GPUVertexElementFormat formats[] = {SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
+            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3};
+        attributes[count++] = {1, 0, formats[c.weights - 1u], 12};
+    }
+    if (c.texcoord_offset != RECOMP_D3D_FVF_ABSENT)
+        attributes[count++] = {4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, c.texcoord_offset};
+    info.vertex_input_state.vertex_buffer_descriptions = &buffer;
+    info.vertex_input_state.num_vertex_buffers = 1;
+    info.vertex_input_state.vertex_attributes = attributes;
+    info.vertex_input_state.num_vertex_attributes = count;
+    pipeline = SDL_CreateGPUGraphicsPipeline(presenter->device, &info);
+    if (!pipeline && sun.depth_clamp) {
+        // Without depth clamp, a frond nearer the sun than the box is clipped from the map.
+        sun.depth_clamp = false;
+        info.rasterizer_state.enable_depth_clip = true;
+        pipeline = SDL_CreateGPUGraphicsPipeline(presenter->device, &info);
+        std::fprintf(stderr, "recomp sun shadow: depth clamp unavailable; casters clip at the box\n");
+    }
+    return pipeline;
+}
+
+bool sunUpload(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
+{
+    auto &sun = presenter->sun;
+    const auto grow = [presenter](SDL_GPUBuffer *&buffer, SDL_GPUTransferBuffer *&transfer, uint32_t &capacity,
+                                  size_t bytes, SDL_GPUBufferUsageFlags usage) {
+        if (bytes <= capacity) return buffer != nullptr && transfer != nullptr;
+        if (buffer) SDL_ReleaseGPUBuffer(presenter->device, buffer);
+        if (transfer) SDL_ReleaseGPUTransferBuffer(presenter->device, transfer);
+        capacity = static_cast<uint32_t>((std::max)(bytes * 2, size_t(4u << 20)));
+        SDL_GPUBufferCreateInfo info{usage, capacity, 0};
+        buffer = SDL_CreateGPUBuffer(presenter->device, &info);
+        SDL_GPUTransferBufferCreateInfo tinfo{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, capacity, 0};
+        transfer = SDL_CreateGPUTransferBuffer(presenter->device, &tinfo);
+        if (!buffer || !transfer) capacity = 0;
+        return buffer != nullptr && transfer != nullptr;
+    };
+    if (!grow(sun.vertex_buffer, sun.vertex_transfer, sun.vertex_capacity, sun.vertex_data.size(), SDL_GPU_BUFFERUSAGE_VERTEX) ||
+        !grow(sun.index_buffer, sun.index_transfer, sun.index_capacity, sun.index_data.size(), SDL_GPU_BUFFERUSAGE_INDEX))
+        return false;
+    void *vertices = SDL_MapGPUTransferBuffer(presenter->device, sun.vertex_transfer, true);
+    void *indices = vertices ? SDL_MapGPUTransferBuffer(presenter->device, sun.index_transfer, true) : nullptr;
+    if (vertices) {
+        std::memcpy(vertices, sun.vertex_data.data(), sun.vertex_data.size());
+        SDL_UnmapGPUTransferBuffer(presenter->device, sun.vertex_transfer);
+    }
+    if (indices) {
+        std::memcpy(indices, sun.index_data.data(), sun.index_data.size());
+        SDL_UnmapGPUTransferBuffer(presenter->device, sun.index_transfer);
+    }
+    if (!vertices || !indices) return false;
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
+    if (!copy) return false;
+    SDL_GPUTransferBufferLocation vsrc{sun.vertex_transfer, 0};
+    SDL_GPUBufferRegion vdst{sun.vertex_buffer, 0, static_cast<Uint32>(sun.vertex_data.size())};
+    SDL_UploadToGPUBuffer(copy, &vsrc, &vdst, true);
+    SDL_GPUTransferBufferLocation isrc{sun.index_transfer, 0};
+    SDL_GPUBufferRegion idst{sun.index_buffer, 0, static_cast<Uint32>(sun.index_data.size())};
+    SDL_UploadToGPUBuffer(copy, &isrc, &idst, true);
+    SDL_EndGPUCopyPass(copy);
+    return true;
+}
+
+/* At present: fit the box to this frame's camera and draw its casters into the map,
+   which the next frame's receivers read. */
+void sunRenderMap(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
+{
+    auto &sun = presenter->sun;
+    const bool had_map = sun.valid;
+    sun.valid = false;
+    unsigned drawn = 0;
+    if (sun.triangles && !sun.casters.empty() && sunFit(sun) && sunUpload(presenter, cmdbuf)) {
+        SDL_GPUDepthStencilTargetInfo depth{};
+        depth.texture = sun.map;
+        depth.load_op = SDL_GPU_LOADOP_CLEAR;
+        depth.store_op = SDL_GPU_STOREOP_STORE;
+        depth.clear_depth = 1.0f;
+        depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, nullptr, 0, &depth);
+        if (pass) {
+            const SDL_GPUViewport viewport{0, 0, float(kSunMapSize), float(kSunMapSize), 0, 1};
+            SDL_SetGPUViewport(pass, &viewport);
+            for (const SunCasterDraw &c : sun.casters) {
+                if (!c.index_count || c.epoch != sun.camera_epoch || !sunSameMatrix(c.view_projection, sun.camera))
+                    continue;
+                SDL_GPUGraphicsPipeline *pipeline = sunCasterPipeline(presenter, c);
+                if (!pipeline) continue;
+                float constants[68]{};
+                for (unsigned b = 0; b <= c.weights; ++b)
+                    for (unsigned r = 0; r < 4; ++r) for (unsigned col = 0; col < 4; ++col)
+                        for (unsigned k = 0; k < 4; ++k)
+                            constants[b * 16 + r * 4 + col] += c.world[b][r * 4 + k] * sun.projection[k * 4 + col];
+                std::memcpy(constants + 64, c.alpha, sizeof c.alpha);
+                SDL_BindGPUGraphicsPipeline(pass, pipeline);
+                SDL_GPUBufferBinding vertices{sun.vertex_buffer, c.vertex_offset};
+                SDL_BindGPUVertexBuffers(pass, 0, &vertices, 1);
+                SDL_GPUBufferBinding indices{sun.index_buffer, c.index_offset};
+                SDL_BindGPUIndexBuffer(pass, &indices, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+                SDL_PushGPUVertexUniformData(cmdbuf, 0, constants, sizeof constants);
+                if (c.alpha_test) {
+                    SDL_PushGPUFragmentUniformData(cmdbuf, 0, constants, sizeof constants);
+                    SDL_GPUTextureSamplerBinding binding{c.texture, c.sampler};
+                    SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+                }
+                SDL_DrawGPUIndexedPrimitives(pass, c.index_count, 1, 0, 0, 0);
+                ++drawn;
+            }
+            SDL_EndGPURenderPass(pass);
+        }
+    }
+    if (drawn) {
+        float near_point[3], forward[3];
+        if (sunViewRay(sun.inverse, near_point, forward)) {
+            sun.valid = true;
+            std::memcpy(sun.map_projection, sun.projection, sizeof sun.map_projection);
+            std::memcpy(sun.map_direction, sun.direction, sizeof sun.map_direction);
+            std::memcpy(sun.map_eye, near_point, sizeof near_point);
+            std::memcpy(sun.map_forward, forward, sizeof forward);
+            sun.map_epoch = sun.camera_epoch;
+        }
+    }
+    if (presenter->performance_counter && presenter->present_count % 120 == 0 && (had_map || sun.valid))
+        std::fprintf(stderr, "recomp sun shadow: present=%u casters=%u receivers=%u missed=%u game_shadows=%u prop_shadows=%u direction=%.4f,%.4f,%.4f\n",
+            presenter->present_count, drawn, sun.receivers, sun.far_receivers, sun.game_shadows, sun.prop_shadows,
+            sun.direction[0], sun.direction[1], sun.direction[2]);
+    sun.casters_drawn = drawn;
+    sun.game_shadows = sun.prop_shadows = sun.receivers = sun.far_receivers = 0;
+    sun.game_alpha = sun.seen_alpha;
+    sun.seen_alpha = 0;
+    sun.casters.clear();
+    sun.vertex_data.clear();
+    sun.index_data.clear();
+    sun.triangles = sun.epoch = 0;
+    std::memset(sun.tested_camera, 0, sizeof sun.tested_camera);
 }
 
 } // namespace
@@ -2459,6 +3240,8 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
 
     std::fprintf(stderr, "[presenter] initialized scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
         scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
+    // Before the boot shaders: whether shadows are on decides their sun block.
+    if (sunShadowRequested()) sunCreate(p);
 
     try {
         p->precompile_thread = std::thread(precompileBootShaders, p);
@@ -2512,6 +3295,16 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             color_h = rt->height;
         }
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, clear.target, color_w, color_h);
+        if (presenter->sun.enabled) {
+            // Camera selection restarts at each main depth clear; casters and receivers
+            // keep to the interval whose camera was chosen.
+            if (clear.clear_depth && !clear.target.offscreen && !clear.target.no_depth) {
+                ++presenter->sun.epoch;
+                presenter->sun.triangles = 0;
+            }
+            if (clear.clear_color && clear.target.offscreen)
+                if (RenderTargetEntry *rt = findRenderTarget(presenter, clear.target.color)) rt->sun_palm.clear(clear.color);
+        }
 
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUColorTargetInfo color_info{};
@@ -2556,6 +3349,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         flushSegment(presenter);
+        if (presenter->sun.enabled) sunRenderMap(presenter, getCommandBuffer(presenter));
         ensureBackbufferResolved(presenter);
 
         pumpEvents(presenter);
@@ -2642,6 +3436,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             (!layout.pretransformed && !draw.has_transform)) {
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         }
+        if (presenter->sun.enabled && sunHideDraw(presenter, draw)) {
+            // Its stencil and depth effects stay; the sun map darkens instead.
+            RecompD3dPresenterCommand hidden = *command;
+            hidden.data.draw.blend.color_write_mask = 0;
+            return recomp_d3d_presenter_submit(presenter, &hidden);
+        }
 
         // Determine destination target
         SDL_GPUTexture *target_color = presenter->backbuffer_color;
@@ -2689,7 +3489,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // Prepare textures
         const bool minify_backbuffer = draw.target.offscreen &&
             (target_w < mainWidth(presenter) || target_h < mainHeight(presenter));
-        SDL_GPUTexture *texture = draw.has_texture ? prepareTexture(presenter, draw, minify_backbuffer) : nullptr;
+        SunOverlay sun_overlay = SunOverlay::None;
+        SDL_GPUTexture *texture = draw.has_texture
+            ? prepareTexture(presenter, draw, minify_backbuffer, presenter->sun.enabled ? &sun_overlay : nullptr) : nullptr;
         SDL_GPUTexture *mask_texture = nullptr;
 
         if (draw.has_alpha_mask) {
@@ -2884,6 +3686,19 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             const float *program_constants = &draw.program_constants[0][0];
             udata.insert(udata.end(), program_constants, program_constants + kProgramConstantFloats);
         }
+        uint32_t sun_offset = kNoProgramConstants;
+        if (sunShader(presenter, layout, draw.program_count)) {
+            float block[kSunUniformFloats];
+            sunObserveDraw(presenter, draw, layout, texture, sun_overlay, block);
+            const auto &draws = presenter->segment.draws;
+            if (!draws.empty() && draws.back().sun_offset != kNoProgramConstants &&
+                std::memcmp(block, &udata[draws.back().sun_offset], sizeof block) == 0) {
+                sun_offset = draws.back().sun_offset;
+            } else {
+                sun_offset = static_cast<uint32_t>(udata.size());
+                udata.insert(udata.end(), block, block + kSunUniformFloats);
+            }
+        }
 
         QueuedDraw q{};
         q.pipeline = pipeline;
@@ -2902,9 +3717,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         q.vs_uniform_size = vs_uniform_size;
         q.program_offset = program_offset;
         q.fs_uniform_size = fs_uniform_size;
+        q.sun_offset = sun_offset;
 
         presenter->segment.draws.push_back(q);
         ++presenter->draw_count;
+        if (presenter->sun.enabled && draw.target.offscreen && sunPalmTexture(draw.target.color))
+            if (RenderTargetEntry *rt = findRenderTarget(presenter, draw.target.color)) rt->sun_palm.draw(draw);
         return RECOMP_D3D_PRESENTER_OK;
     }
 
@@ -2942,6 +3760,7 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
         TextureEntry &entry = presenter->textures[i];
         if (entry.used && released(entry.data)) {
             unindexTexture(presenter, i);
+            sunForgetTexture(presenter, entry.texture);
             if (entry.texture) SDL_ReleaseGPUTexture(presenter->device, entry.texture);
             entry.used = false;
         }
@@ -2974,6 +3793,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
         p->current_command_buffer = nullptr;
     }
     recomp_overlay_sdl_gpu_shutdown();
+    sunRelease(p);
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {

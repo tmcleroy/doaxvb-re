@@ -98,7 +98,8 @@ a list, A ticks or presses, Start plays and B quits. Texture dumps go to
 with both Windows PowerShell 5 and PowerShell 7; it uses isolated synthetic
 settings under `private/`.
 
-On D3D11, **Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default) include
+**Sun shadows** (`RECOMP_D3D_SUN_SHADOW=1`, off by default; D3D11, and Metal
+and Vulkan one frame behind) include
 court posts, palm trunks and leaves, and the volleyball net tape and rope.
 Leaves cast through texture alpha; blended foliage uses a half-alpha cutoff.
 The map keeps its fixed court-area resolution. Verified original post and
