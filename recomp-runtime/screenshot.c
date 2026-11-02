@@ -151,8 +151,8 @@ static bool write_chunk(FILE *file, const char type[4], const uint8_t *data, uin
         fwrite(trailer, 1, 4, file) == 4;
 }
 
-bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
-    uint32_t width, uint32_t height, uint32_t pitch)
+static bool write_png(const char *path, const uint8_t *bgra,
+    uint32_t width, uint32_t height, uint32_t pitch, bool alpha)
 {
     if (path == NULL || bgra == NULL || width == 0u || height == 0u ||
         width > 16384u || height > 16384u || pitch < width * 4u) {
@@ -160,7 +160,8 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
     }
     /* Each row: a filter byte (0) and RGB. The zlib stream stores it in
        blocks of at most 65535 bytes. */
-    const size_t row = 1u + (size_t)width * 3u;
+    const size_t channels = alpha ? 4u : 3u;
+    const size_t row = 1u + (size_t)width * channels;
     const size_t raw_size = row * height;
     const size_t blocks = (raw_size + 65534u) / 65535u;
     const size_t zlib_size = 2u + raw_size + blocks * 5u + 4u;
@@ -174,9 +175,10 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
         const uint8_t *in = bgra + (size_t)y * pitch;
         out[0] = 0u;
         for (uint32_t x = 0u; x < width; ++x) {
-            out[1u + x * 3u] = in[x * 4u + 2u];
-            out[2u + x * 3u] = in[x * 4u + 1u];
-            out[3u + x * 3u] = in[x * 4u];
+            out[1u + x * channels] = in[x * 4u + 2u];
+            out[2u + x * channels] = in[x * 4u + 1u];
+            out[3u + x * channels] = in[x * 4u];
+            if (alpha) out[4u + x * channels] = in[x * 4u + 3u];
         }
     }
 
@@ -209,7 +211,7 @@ bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
     put32(header, width);
     put32(header + 4, height);
     header[8] = 8u;   /* bits per channel */
-    header[9] = 2u;   /* RGB */
+    header[9] = alpha ? 6u : 2u;   /* RGBA or RGB */
     header[10] = header[11] = header[12] = 0u;
     written = fwrite(signature, 1, 8, file) == 8 &&
         write_chunk(file, "IHDR", header, sizeof header) &&
@@ -221,6 +223,12 @@ done:
     free(raw);
     free(zlib);
     return written;
+}
+
+bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
+    uint32_t width, uint32_t height, uint32_t pitch)
+{
+    return write_png(path, bgra, width, height, pitch, false);
 }
 
 /* RECOMP_SCREENSHOT_DIR, or DOAXBV in the user's Pictures folder. */
@@ -289,4 +297,25 @@ void recomp_screenshot_save(const uint8_t *bgra, uint32_t width,
     } else {
         fprintf(stderr, "recomp screenshot: could not write %s\n", path);
     }
+}
+
+void recomp_screenshot_save_layers(const uint8_t *bgra, uint32_t width, uint32_t height,
+    uint32_t pitch, const uint8_t *depth)
+{
+    char path[1200];
+    if (!recomp_screenshot_path(path, sizeof path)) {
+        fprintf(stderr, "recomp screenshot: no folder to save in\n");
+        return;
+    }
+    if (!write_png(path, bgra, width, height, pitch, true)) {
+        fprintf(stderr, "recomp screenshot: could not write %s\n", path);
+        return;
+    }
+    fprintf(stderr, "recomp screenshot: saved %s (%ux%u, transparent)\n", path, width, height);
+    if (depth == NULL) return;
+    char depth_path[1210];
+    const size_t length = strlen(path);
+    snprintf(depth_path, sizeof depth_path, "%.*s-depth.png", (int)(length - 4u), path);
+    if (write_png(depth_path, depth, width, height, pitch, false))
+        fprintf(stderr, "recomp screenshot: saved %s\n", depth_path);
 }

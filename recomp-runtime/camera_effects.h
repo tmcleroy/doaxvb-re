@@ -56,6 +56,9 @@ typedef struct RecompCameraEffects {
     float exposure, contrast, saturation;
     /* Bloom and sun glare, 0 to 1. */
     float bloom;
+    /* Screenshots keep only the characters (alpha from the presenter's
+       character mask) and save a depth picture beside them. */
+    bool transparent;
 } RecompCameraEffects;
 
 /* Blur, in pixels of a frame `height` pixels tall, of a point `depth` world

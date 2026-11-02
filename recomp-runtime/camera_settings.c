@@ -129,6 +129,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_SPOT:
         settings->spot = (unsigned)wrap((int)settings->spot + steps, RECOMP_CAMERA_SPOTS);
         break;
+    case RECOMP_CAMERA_SETTING_BACKGROUND:
+        if (steps % 2 != 0) settings->transparent = !settings->transparent;
+        break;
     default:
         break;
     }
@@ -211,6 +214,10 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         snprintf(text, size, "Grid: %s", names[settings->grid % RECOMP_CAMERA_GRID_COUNT]);
         break;
     }
+    case RECOMP_CAMERA_SETTING_BACKGROUND:
+        snprintf(text, size, "Screenshot background: %s",
+            settings->transparent ? "Transparent, girls only (+ depth)" : "The scene");
+        break;
     case RECOMP_CAMERA_SETTING_SPOT:
         snprintf(text, size, "Camera spot %u: A go, X save (keys 1-4, Shift saves)", settings->spot + 1u);
         break;
@@ -250,8 +257,10 @@ void recomp_camera_settings_effects(const RecompCameraSettings *settings, float 
     effects->contrast = (float)settings->contrast / 100.0f;
     effects->saturation = (float)settings->saturation / 10.0f;
     effects->bloom = (float)settings->bloom / 10.0f;
+    effects->transparent = settings->transparent;
     effects->active = effects->depth_of_field || settings->roll != 0.0f ||
         settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
         settings->grain != 0u || effects->letterbox > 0.0f || settings->exposure != 0 ||
-        settings->contrast != 0 || settings->saturation != 10u || settings->bloom != 0u;
+        settings->contrast != 0 || settings->saturation != 10u || settings->bloom != 0u ||
+        settings->transparent;
 }

@@ -346,6 +346,7 @@ the sticks, WASD and the right mouse button still fly.
 | Bloom and glare | 0% to 100%: a glow round bright parts, and a glow and lens ghosts when the sun is in the picture and not covered |
 | Grid | Off, Thirds, Golden ratio, Centre (on screen only, never in screenshots) |
 | Camera spot | 1 to 4: A goes to the spot, X saves the view there |
+| Screenshot background | The scene, or transparent with only the girls kept, plus a depth picture |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -381,6 +382,15 @@ picture's bright parts around each pixel and lifts the pixel toward them
 (a screen blend, so nothing clips); glare places the sun by projecting its
 direction through the camera of a lit scenery draw, and draws only where the
 view depth there is far, so a palm or a girl in front hides it.
+
+A transparent screenshot keeps only the characters: with the free camera
+setting on, the view-depth target has a second channel that character draws
+(skinned joints and lit pieces no larger than a limb, the ball among them)
+set to 1, and the MSAA resolve averages it into soft edges. The effects pass
+writes it as the frame's alpha and the PNG keeps it (RGBA). Beside it,
+`...-depth.png` is the view depth as grey, white near and black far,
+logarithmic out to 100 units. Colours at the edges are still mixed with what
+was behind.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

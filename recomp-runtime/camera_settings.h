@@ -37,6 +37,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_BLOOM,
     RECOMP_CAMERA_SETTING_GRID,
     RECOMP_CAMERA_SETTING_SPOT,
+    RECOMP_CAMERA_SETTING_BACKGROUND,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -92,6 +93,7 @@ typedef struct RecompCameraSettings {
     unsigned bloom;       /* tenths */
     unsigned grid;        /* RecompCameraGrid */
     unsigned spot;        /* the camera spot the Camera spot row points at, 0 to 3 */
+    bool transparent;     /* screenshots keep only the characters, with a depth picture */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);

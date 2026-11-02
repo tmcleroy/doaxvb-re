@@ -595,6 +595,8 @@ struct RecompD3dPresenter {
     struct {
         bool enabled = false;
         bool depth_resolved = false;
+        // The last frame's settings asked for transparent screenshots.
+        bool transparent = false;
         // The scene cleared its depth this frame; a held picture or a scene
         // change copies a frame without drawing depth, so it gets no blur.
         bool depth_drawn = false;
@@ -1306,7 +1308,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     if (sun) s += kMslSunVisibility;
 
     // ps_main
-    if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float depth [[color(1)]]; };\n";
+    if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float2 depth [[color(1)]]; };\n";
     s += depth_output ? "fragment PSOut ps_main(VSOut in [[stage_in]],\n" : "fragment float4 ps_main(VSOut in [[stage_in]],\n";
     s += "                        constant TransformUniforms &u [[buffer(0)]],\n";
     if (sun) s += "                        constant SunUniforms &sun [[buffer(1)]],\n";
@@ -1365,7 +1367,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "        shaded.a *= alpha_mask.sample(mask_sampler, in.reflection_coord, bias(u.reflection_flags.w)).a;\n";
     s += "    }\n";
     // Time of day: the baked scene takes the chosen time's tint (camera_effects.h).
-    s += "    if (u.scene_tint.w > 0.5) shaded.rgb *= u.scene_tint.rgb;\n";
+    s += "    if (u.scene_tint.w > 0.5 && u.scene_tint.w < 1.5) shaded.rgb *= u.scene_tint.rgb;\n";
     if (sun) s += sunApplySource(true);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(saturate(shaded.a) * 255.0);\n";
@@ -1380,7 +1382,9 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "            (func == 6 && alpha >= ref);\n";
     s += "        if (!alpha_pass) discard_fragment();\n";
     s += "    }\n";
-    s += depth_output ? "    return PSOut{shaded, in.view_depth};\n" : "    return shaded;\n";
+    // View depth, and 1 where a character draws (scene_tint.w 2), for transparent shots.
+    s += depth_output ? "    return PSOut{shaded, float2(in.view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0)};\n"
+                      : "    return shaded;\n";
     s += "}\n";
 
     return s;
@@ -1663,7 +1667,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "layout(location = 0) out vec4 out_color;\n";
     if (depth_output) {
         s += "layout(location = 9) in float v_view_depth;\n";
-        s += "layout(location = 1) out float out_depth;\n";
+        s += "layout(location = 1) out vec2 out_depth;\n";
     }
     if (two_coords) {
         // Cubic B-spline in four bilinear taps; see the Metal shader.
@@ -1731,7 +1735,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= texture(alpha_mask, refl_tc, u.reflection_flags.w).a;\n";
     s += "    }\n";
-    s += "    if (u.scene_tint.w > 0.5) shaded.rgb *= u.scene_tint.rgb;\n";
+    s += "    if (u.scene_tint.w > 0.5 && u.scene_tint.w < 1.5) shaded.rgb *= u.scene_tint.rgb;\n";
     if (sun) s += sunApplySource(false);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(clamp(shaded.a, 0.0, 1.0) * 255.0);\n";
@@ -1747,7 +1751,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "        if (!alpha_pass) discard;\n";
     s += "    }\n";
     s += "    out_color = shaded;\n";
-    if (depth_output) s += "    out_depth = v_view_depth;\n";
+    if (depth_output) s += "    out_depth = vec2(v_view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0);\n";
     s += "}\n";
 
     return s;
@@ -2093,8 +2097,9 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
 
     // View depth follows the depth buffer: only draws that write depth write it.
     SDL_GPUColorTargetDescription color_descs[2] = {color_desc, {}};
-    color_descs[1].format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    color_descs[1].blend_state.color_write_mask = pkey.depth_write_enable ? SDL_GPU_COLORCOMPONENT_R : 0;
+    color_descs[1].format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+    color_descs[1].blend_state.color_write_mask = pkey.depth_write_enable ?
+        SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G : 0;
     color_descs[1].blend_state.enable_color_write_mask = true;
     pinfo.target_info.color_target_descriptions = color_descs;
     pinfo.target_info.num_color_targets = depth_output ? 2 : 1;
@@ -3059,7 +3064,8 @@ constexpr char kEffectsBody[] = R"(
         float n = FRACT(sin(dot(pos.xy + p.look.w * float2(12.9898, 4.1414), float2(12.9898, 78.233))) * 43758.5453);
         rgb += p.look.y * 0.14 * (n - 0.5);
     }
-    return float4(clamp(rgb, 0.0, 1.0), 1.0);
+    // Transparent shots keep the characters: alpha from the mask.
+    return float4(clamp(rgb, 0.0, 1.0), p.taps.y > 0.5 ? SAMPLE(depth_tex, depth_smp, st).g : 1.0);
 )";
 
 std::string effectsSource(bool msl)
@@ -3139,7 +3145,7 @@ bool effectsCreateTargets(RecompD3dPresenter *presenter)
     const bool msaa = presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTextureCreateInfo info{};
     info.type = SDL_GPU_TEXTURETYPE_2D;
-    info.format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+    info.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
     info.usage = msaa ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     info.width = width;
     info.height = height;
@@ -3339,6 +3345,8 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     // A big screenshot's frame is n times larger: n^2 times the taps keep its blur as smooth.
     const float bigger = p_big_ratio(presenter);
     u.taps[0] = std::min(96.0f * bigger * bigger, 1536.0f);
+    u.taps[1] = settings.transparent ? 1.0f : 0.0f;
+    e.transparent = settings.transparent;
     u.dof[0] = settings.depth_of_field && e.depth_drawn ? 1.0f : 0.0f;
     e.depth_drawn = false;
     // An automatic focus scales the blur as if focused at 2.5 units.
@@ -3513,11 +3521,39 @@ void bigShotStep(RecompD3dPresenter *p)
 // Saves the game's frame, without the overlay drawn on the window, and
 // submits the command buffer. The download waits for the GPU, so only a
 // requested screenshot pays for it.
+static float halfToFloat(uint16_t h)
+{
+    const uint32_t sign = uint32_t(h & 0x8000u) << 16, exponent = (h >> 10) & 0x1Fu, mantissa = h & 0x3FFu;
+    uint32_t bits;
+    if (exponent == 0u) {
+        if (mantissa == 0u) bits = sign;
+        else {
+            float value = std::ldexp(float(mantissa), -24);
+            return (h & 0x8000u) ? -value : value;
+        }
+    } else if (exponent == 31u) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+    }
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
+}
+
+/* Saves the frame and submits the command buffer. A transparent shot also
+   downloads the view depth and character mask: the mask was already put in
+   the frame's alpha by the effects pass, and the depth becomes a grey
+   picture, white near and black far (logarithmic out to 100 units). */
 static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *frame) {
     const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
+    const bool layers = presenter->effects.enabled && presenter->effects.transparent &&
+        presenter->effects.depth_resolve != nullptr && frame == presenter->effects.output;
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
     SDL_GPUTransferBuffer *buffer = SDL_CreateGPUTransferBuffer(presenter->device, &info);
+    SDL_GPUTransferBuffer *depth = layers ? SDL_CreateGPUTransferBuffer(presenter->device, &info) : nullptr;
     if (buffer == nullptr) {
+        if (depth) SDL_ReleaseGPUTransferBuffer(presenter->device, depth);
         SDL_SubmitGPUCommandBuffer(cmdbuf);
         return;
     }
@@ -3525,16 +3561,39 @@ static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *
     SDL_GPUTextureRegion source{frame, 0, 0, 0, 0, 0, w, h, 1};
     SDL_GPUTextureTransferInfo destination{buffer, 0, w, h};
     SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    if (depth) {
+        SDL_GPUTextureRegion depth_source{presenter->effects.depth_resolve, 0, 0, 0, 0, 0, w, h, 1};
+        SDL_GPUTextureTransferInfo depth_destination{depth, 0, w, h};
+        SDL_DownloadFromGPUTexture(copy, &depth_source, &depth_destination);
+    }
     SDL_EndGPUCopyPass(copy);
     SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
     if (fence != nullptr) {
         SDL_WaitForGPUFences(presenter->device, true, &fence, 1);
         SDL_ReleaseGPUFence(presenter->device, fence);
         if (void *pixels = SDL_MapGPUTransferBuffer(presenter->device, buffer, false)) {
-            recomp_screenshot_save(static_cast<const uint8_t *>(pixels), w, h, w * 4u);
+            const auto *bgra = static_cast<const uint8_t *>(pixels);
+            if (depth) {
+                std::vector<uint8_t> grey(size_t(w) * h * 4u);
+                if (const auto *raw = static_cast<const uint16_t *>(SDL_MapGPUTransferBuffer(presenter->device, depth, false))) {
+                    const float scale = 1.0f / std::log2(101.0f);
+                    for (size_t i = 0; i < size_t(w) * h; ++i) {
+                        const float d = std::max(0.0f, halfToFloat(raw[i * 2u]));
+                        const float near = 1.0f - std::min(1.0f, std::log2(1.0f + d) * scale);
+                        const uint8_t v = uint8_t(near * 255.0f + 0.5f);
+                        grey[i * 4u] = grey[i * 4u + 1u] = grey[i * 4u + 2u] = v;
+                        grey[i * 4u + 3u] = 255u;
+                    }
+                    SDL_UnmapGPUTransferBuffer(presenter->device, depth);
+                }
+                recomp_screenshot_save_layers(bgra, w, h, w * 4u, grey.data());
+            } else {
+                recomp_screenshot_save(bgra, w, h, w * 4u);
+            }
             SDL_UnmapGPUTransferBuffer(presenter->device, buffer);
         }
     }
+    if (depth) SDL_ReleaseGPUTransferBuffer(presenter->device, depth);
     SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
 }
 
@@ -3979,7 +4038,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             color_infos[1].texture = presenter->effects.scene_depth;
             color_infos[1].load_op = SDL_GPU_LOADOP_CLEAR;
             color_infos[1].store_op = SDL_GPU_STOREOP_STORE;
-            color_infos[1].clear_color = {65504.0f, 0.0f, 0.0f, 0.0f};
+            color_infos[1].clear_color = {65504.0f, 0.0f, 0.0f, 0.0f}; // far, no character
             presenter->effects.depth_resolved = false;
             presenter->effects.depth_drawn = true;
         }
@@ -4276,12 +4335,17 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // Unlit 3D draws (vertex programs too: the tint is per pixel) and 2D
         // backgrounds before them take it; lit scenery, such as the sea, keeps its
         // relit lights and tints only its own glow, and characters only relight.
-        if (presenter->effects.tint && is_main) {
+        // Characters are marked (scene_tint.w 2) for transparent screenshots.
+        const bool character = presenter->effects.enabled && is_main && !layout.pretransformed &&
+            !draw.program_count && effectsCharacterPiece(draw);
+        if (character) {
+            constants[147] = 2.0f;
+        } else if (presenter->effects.tint && is_main) {
             const bool background = layout.pretransformed && !presenter->effects.scene_drawn;
             if ((!layout.pretransformed && !draw.directional.enabled) || background) {
                 std::memcpy(constants + 144, presenter->effects.tint_rgb, 3 * sizeof(float));
                 constants[147] = 1.0f;
-            } else if (draw.directional.enabled && !draw.program_count && !effectsCharacterPiece(draw)) {
+            } else if (draw.directional.enabled && !draw.program_count) {
                 for (unsigned c = 0; c < 3; ++c) constants[148 + 64 + c] *= presenter->effects.tint_rgb[c];
             }
         }

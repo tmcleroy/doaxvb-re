@@ -22,8 +22,9 @@
   shadows follow and tints the baked stage and sky for any hour from 06:00
   to 22:00 (`docs/time-of-day.md`). It also turns and dims or brightens
   the key light, sets exposure, contrast and saturation, adds bloom and sun
-  glare, shows a composition grid, and saves four camera spots (keys 1 to
-  4, Shift saves). See
+  glare, shows a composition grid, saves four camera spots (keys 1 to 4,
+  Shift saves), and takes screenshots with a transparent background (only
+  the girls) and a depth picture. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27
