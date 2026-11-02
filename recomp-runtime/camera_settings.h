@@ -28,6 +28,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_HIDE_BALL,
     RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_SHOT_SIZE,
+    RECOMP_CAMERA_SETTING_TIME_OF_DAY,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -64,6 +65,7 @@ typedef struct RecompCameraSettings {
     bool hide_ball;       /* in a match */
     bool hide_others;     /* every character but the chosen one */
     unsigned shot_size;   /* screenshots at 1 to 4 times the frame, in tiles */
+    unsigned time_of_day; /* 0 the stage's own, else half hours from 05:30 (1 is 06:00) */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);

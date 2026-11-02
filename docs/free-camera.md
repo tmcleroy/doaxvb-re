@@ -334,6 +334,7 @@ the sticks, WASD and the right mouse button still fly.
 | Ball | Shown / Hidden (in a match) |
 | Other girls | Shown / Hidden |
 | Screenshot size | 1x to 4x the frame |
+| Time of day | The stage's own, or 06:00 to 22:00 in half hours ([`time-of-day.md`](time-of-day.md)) |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The

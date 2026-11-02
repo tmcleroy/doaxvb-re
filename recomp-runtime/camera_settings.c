@@ -13,6 +13,8 @@ static const float PI = 3.14159265f;
 static const float MIN_FOCUS = 0.2f, MAX_FOCUS = 200.0f;
 static const float MIN_FOV_DEGREES = 5.0f, MAX_FOV_DEGREES = 120.0f;
 static const float MAX_ROLL = 45.0f;
+/* Half hours from 06:00 to 22:00. */
+static const unsigned TIME_STEPS = 33u;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings)
 {
@@ -96,6 +98,10 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_SHOT_SIZE:
         settings->shot_size = 1u + clamp_index((int)settings->shot_size - 1 + steps, 4u);
         break;
+    case RECOMP_CAMERA_SETTING_TIME_OF_DAY:
+        /* 06:00 to 22:00 in half hours, and the stage's own before them. */
+        settings->time_of_day = clamp_index((int)settings->time_of_day + steps, TIME_STEPS + 1u);
+        break;
     default:
         break;
     }
@@ -155,6 +161,14 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_SHOT_SIZE:
         snprintf(text, size, "Screenshot size: %ux", settings->shot_size);
         break;
+    case RECOMP_CAMERA_SETTING_TIME_OF_DAY:
+        if (settings->time_of_day == 0u) {
+            snprintf(text, size, "Time of day: the stage's own");
+        } else {
+            const unsigned minutes = 330u + 30u * settings->time_of_day;
+            snprintf(text, size, "Time of day: %02u:%02u", minutes / 60u, minutes % 60u);
+        }
+        break;
     default:
         snprintf(text, size, "?");
         break;
@@ -176,6 +190,7 @@ void recomp_camera_settings_effects(const RecompCameraSettings *settings, float 
     effects->vignette = (float)settings->vignette / 10.0f;
     effects->grain = (float)settings->grain / 10.0f;
     effects->letterbox = LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].aspect;
+    effects->hour = settings->time_of_day == 0u ? -1.0f : 5.5f + 0.5f * (float)settings->time_of_day;
     effects->active = effects->depth_of_field || settings->roll != 0.0f ||
         settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
         settings->grain != 0u || effects->letterbox > 0.0f;

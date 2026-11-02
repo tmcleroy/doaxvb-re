@@ -390,6 +390,8 @@ add_executable(recomp_runtime_test
     body_morph_adapter.c
     stage_lights.c
     stage_lights_adapter.c
+    time_of_day.c
+    camera_effects.c
     ohci_model.c
     ohci_model_test.c
     apu_model.c
@@ -712,6 +714,7 @@ if(RECOMP_PROGRAM_DIR)
         body_morph_adapter.c
         stage_lights.c
         stage_lights_adapter.c
+        time_of_day.c
         cpu_exhibition.c
         title_idle.c
         free_camera.c
@@ -978,7 +981,7 @@ add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
 add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
 add_executable(recomp_camera_effects_test camera_effects.c camera_settings.c camera_effects_test.c)
-add_executable(recomp_stage_lights_test stage_lights.c stage_lights_test.c)
+add_executable(recomp_stage_lights_test stage_lights.c time_of_day.c stage_lights_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
 if(WIN32)
     target_link_libraries(recomp_screenshot_test PRIVATE shell32 ole32 uuid)
@@ -994,6 +997,7 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
     target_link_libraries(recomp_free_camera_test PRIVATE m)
     target_link_libraries(recomp_camera_effects_test PRIVATE m)
+    target_link_libraries(recomp_stage_lights_test PRIVATE m)
     target_link_libraries(recomp_animation_pose_test PRIVATE m)
     target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
 endif()

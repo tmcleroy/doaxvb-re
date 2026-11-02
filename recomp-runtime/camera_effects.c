@@ -105,6 +105,26 @@ void recomp_camera_effects_report_subject(float depth)
     unlock();
 }
 
+static bool scene_tinted;
+static float scene_tint[3] = {1.0f, 1.0f, 1.0f};
+
+void recomp_camera_effects_report_scene_tint(bool on, const float tint[3])
+{
+    lock();
+    scene_tinted = on;
+    if (on && tint != NULL) memcpy(scene_tint, tint, sizeof scene_tint);
+    unlock();
+}
+
+bool recomp_camera_effects_scene_tint(float tint[3])
+{
+    lock();
+    const bool on = scene_tinted;
+    memcpy(tint, scene_tint, sizeof scene_tint);
+    unlock();
+    return on;
+}
+
 static unsigned tiles_kept;
 
 void recomp_camera_effects_report_tiles_kept(unsigned kept)

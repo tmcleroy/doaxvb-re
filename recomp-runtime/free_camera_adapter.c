@@ -1123,6 +1123,7 @@ void recomp_free_camera_overlay(bool viewer)
     }
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
+    if (!(state.active && state.started)) effects.hour = -1.0f;
     step_big_shot();
     if (state.big.running) {
         effects.tiles = state.big.across;

@@ -1,5 +1,9 @@
 #include "stage_lights_adapter.h"
 #include "stage_lights.h"
+#include "time_of_day.h"
+#include "camera_effects.h"
+#include "viewer_scene.h"
+#include "d3d_frame_adapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,6 +54,105 @@ static void toward_from_angles(int32_t yaw, int32_t pitch, float toward[3])
     recomp_fpu_context_restore(&fpu);
 }
 
+/* RECOMP_STAGE_LIGHTS_DUMP=1 logs each slot's record whenever it changes,
+   with the sun direction the shadows use (0x00333870), so the lights of each
+   stage and time of day can be read off a run. */
+static void dump_light(uint32_t record, uint32_t slot, const uint8_t bytes[RECOMP_STAGE_LIGHT_SIZE],
+    const RecompStageLight *light)
+{
+    static int dump = -1;
+    static struct { uint32_t record; uint8_t bytes[RECOMP_STAGE_LIGHT_SIZE]; } seen[64];
+    static unsigned count;
+    if (dump < 0) dump = getenv("RECOMP_STAGE_LIGHTS_DUMP") != NULL;
+    if (!dump) return;
+    static float last_sun[3];
+    float now_sun[3];
+    recomp_guest_load(now_sun, 0x00333870u, sizeof now_sun);
+    if (memcmp(now_sun, last_sun, sizeof now_sun) != 0) {
+        memcpy(last_sun, now_sun, sizeof now_sun);
+        fprintf(stderr, "stage sun at frame %u: %.4f,%.4f,%.4f\n", recomp_d3d_frame_adapter_swap_counter(),
+            now_sun[0], now_sun[1], now_sun[2]);
+    }
+    for (unsigned i = 0u; i < count; ++i)
+        if (seen[i].record == record && memcmp(seen[i].bytes, bytes, RECOMP_STAGE_LIGHT_SIZE) == 0) return;
+    if (count < 64u) {
+        seen[count].record = record;
+        memcpy(seen[count++].bytes, bytes, RECOMP_STAGE_LIGHT_SIZE);
+    }
+    float sun[3];
+    recomp_guest_load(sun, 0x00333870u, sizeof sun);
+    fprintf(stderr, "stage light frame %u %08X slot %u: kind=%u ambient=%.4f,%.4f,%.4f/%.3f diffuse=%.4f,%.4f,%.4f/%.3f "
+        "yaw=%d pitch=%d pos=%.2f,%.2f,%.2f att=%.3f,%.3f,%.3f range=%.1f spec=%.3f sun=%.4f,%.4f,%.4f\n",
+        recomp_d3d_frame_adapter_swap_counter(), record, slot, light->kind, light->ambient[0], light->ambient[1], light->ambient[2], light->ambient_alpha,
+        light->diffuse[0], light->diffuse[1], light->diffuse[2], light->diffuse_alpha, light->yaw, light->pitch,
+        light->position[0], light->position[1], light->position[2], light->attenuation[0], light->attenuation[1],
+        light->attenuation[2], light->range, light->specular_scale, sun[0], sun[1], sun[2]);
+}
+
+/* Time of day (time_of_day.h): while the free camera flies with a time
+   chosen, each light leaves here relit for that time. Light 0 comes first
+   each frame; its colours tell the time the stage was made for, and its new
+   direction becomes the sun the shadows follow (0x00333870), put back when
+   the time goes back to the stage's own. */
+/* Radians: about 25 degrees. */
+static const float LIGHT_ELEVATION = 0.45f;
+
+static struct {
+    bool on;
+    float saved_sun[3];
+    RecompTimeOfDayLook stage, target;
+} day;
+
+/* The loaded court's stage (COURT_LOADED[COURT_VIEW], as cpu_exhibition.c
+   reads it) tells the time the scene was made for; others count as day.
+   A match changes rigs between shots, so the lights cannot tell it. */
+static float stage_hour(void)
+{
+    const uint8_t view = *recomp_memory(0x004D56E4u, 1u);
+    const uint8_t stage = view < 8u ? *recomp_memory(0x004D92F0u + view, 1u) : 0u;
+    switch (recomp_viewer_stage_time(stage)) {
+    case RECOMP_VIEWER_TIME_SUNSET: return recomp_time_of_day_game_hour(1u);
+    case RECOMP_VIEWER_TIME_DUSK: return recomp_time_of_day_game_hour(2u);
+    default: return recomp_time_of_day_game_hour(0u);
+    }
+}
+
+static void time_of_day_light(uint32_t slot, RecompStageLight *light, float toward[3])
+{
+    RecompCameraEffects effects;
+    recomp_camera_effects_take(&effects);
+    if (!(effects.hour >= 0.0f)) {
+        if (day.on) {
+            recomp_guest_store(0x00333870u, day.saved_sun, sizeof day.saved_sun);
+            recomp_camera_effects_report_scene_tint(false, NULL);
+            day.on = false;
+        }
+        return;
+    }
+    if (!day.on) {
+        recomp_guest_load(day.saved_sun, 0x00333870u, sizeof day.saved_sun);
+        day.on = true;
+    }
+    if (slot == 0u) {
+        recomp_time_of_day_look(stage_hour(), &day.stage);
+        recomp_time_of_day_look(effects.hour, &day.target);
+        float tint[3];
+        recomp_time_of_day_tint(&day.stage, &day.target, tint);
+        recomp_camera_effects_report_scene_tint(true, tint);
+    }
+    recomp_time_of_day_relight(&day.stage, &day.target, slot, light);
+    if (slot == 0u && light->kind != 0u) {
+        /* Shadows follow the true sun; the key light stays at least
+           LIGHT_ELEVATION up, or flat ground would go dark at sunset. */
+        float sun[3], aimed[3];
+        recomp_time_of_day_direction(toward, day.target.elevation, sun);
+        recomp_guest_store(0x00333870u, sun, sizeof sun);
+        const float lit = day.target.elevation > LIGHT_ELEVATION ? day.target.elevation : LIGHT_ELEVATION;
+        recomp_time_of_day_direction(toward, lit, aimed);
+        memcpy(toward, aimed, sizeof aimed);
+    }
+}
+
 /* 0x0017CB50: EDI the game record, [ESP+4] the slot (ESP points at the
    return slot the caller pushed, which returning pops). As the game leaves
    them: EAX whether the light is on, ECX the record's kind, EDX its
@@ -63,7 +166,9 @@ static void light_to_d3d(void)
     float toward[3];
     recomp_guest_load(bytes, record, sizeof bytes);
     recomp_stage_light_read(bytes, &light);
+    dump_light(record, slot, bytes, &light);
     toward_from_angles(light.yaw, light.pitch, toward);
+    time_of_day_light(slot, &light, toward);
     recomp_stage_light_to_d3d(&light, toward, out);
     recomp_guest_store(LIGHT_TABLE + (uint32_t)((int32_t)slot * 0x70), out, sizeof out);
     recomp_runtime.registers.eax = light.kind != 0u;

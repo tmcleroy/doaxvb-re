@@ -31,6 +31,10 @@ RecompViewerTime recomp_viewer_time_step(RecompViewerTime time, int step);
    RECOMP_VIEWER_TIME_COURT, or for a time its place has no stage for, given
    the court's own stage. RECOMP_VIEWER_NO_STAGE for a court out of range. */
 int recomp_viewer_court_stage(uint32_t court, RecompViewerTime time, uint8_t own_stage);
+/* The time a stage was made for, by its number (the stage sweep in
+   docs/model-viewer.md); RECOMP_VIEWER_TIME_COURT for one not known, and
+   night stages count as dusk. */
+RecompViewerTime recomp_viewer_stage_time(uint8_t stage);
 
 #ifdef __cplusplus
 }

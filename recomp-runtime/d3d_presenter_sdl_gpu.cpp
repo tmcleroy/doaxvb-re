@@ -42,8 +42,8 @@ constexpr uint32_t kInitialIndexCapacity = 16u * 1024u * 1024u;  // 16 MB
 // TransformUniforms in floats: the header every draw pushes, then the
 // directional block. SDL's Vulkan backend binds 4 KB per uniform slot, so
 // vertex program constants live in their own slot.
-constexpr uint32_t kHeaderUniformFloats = 144u;
-constexpr uint32_t kTransformUniformFloats = 280u;
+constexpr uint32_t kHeaderUniformFloats = 148u;
+constexpr uint32_t kTransformUniformFloats = 284u;
 constexpr uint32_t kProgramConstantFloats = 192u * 4u;
 constexpr uint32_t kNoProgramConstants = UINT32_MAX;
 
@@ -68,6 +68,7 @@ struct TransformUniforms {
     float4 reflection_diffuse;
     float4 reflection_flags;
     float4 directional_flags;
+    float4 scene_tint;
     float4x4 directional_normals[4];
     float4 directional_base;
     float4 directional_material;
@@ -600,6 +601,12 @@ struct RecompD3dPresenter {
         // The character part nearest the middle of this frame: its distance
         // off-centre (in NDC) and its view depth, for "focus on her".
         float subject_offset = 0.0f, subject_depth = 0.0f;
+        // Time of day's tint for the baked scene, taken at each present for the next frame.
+        bool tint = false;
+        float tint_rgb[3] = {1.0f, 1.0f, 1.0f};
+        // A 3D draw since the scene's depth clear: 2D draws before it are
+        // backgrounds (the sky), after it the game's overlay.
+        bool scene_drawn = false;
         SDL_GPUTexture *scene_depth = nullptr, *depth_resolve = nullptr, *output = nullptr;
         SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
         SDL_GPUGraphicsPipeline *pipeline = nullptr;
@@ -1350,6 +1357,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= alpha_mask.sample(mask_sampler, in.reflection_coord, bias(u.reflection_flags.w)).a;\n";
     s += "    }\n";
+    // Time of day: the baked scene takes the chosen time's tint (camera_effects.h).
+    s += "    if (u.scene_tint.w > 0.5) shaded.rgb *= u.scene_tint.rgb;\n";
     if (sun) s += sunApplySource(true);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(saturate(shaded.a) * 255.0);\n";
@@ -1384,6 +1393,7 @@ layout(set = 1, binding = 0, std140) uniform TransformUniforms {
     vec4 reflection_diffuse;
     vec4 reflection_flags;
     vec4 directional_flags;
+    vec4 scene_tint;
     mat4 directional_normals[4];
     vec4 directional_base;
     vec4 directional_material;
@@ -1406,6 +1416,7 @@ layout(set = 3, binding = 0, std140) uniform TransformUniforms {
     vec4 reflection_diffuse;
     vec4 reflection_flags;
     vec4 directional_flags;
+    vec4 scene_tint;
     mat4 directional_normals[4];
     vec4 directional_base;
     vec4 directional_material;
@@ -1713,6 +1724,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= texture(alpha_mask, refl_tc, u.reflection_flags.w).a;\n";
     s += "    }\n";
+    s += "    if (u.scene_tint.w > 0.5) shaded.rgb *= u.scene_tint.rgb;\n";
     if (sun) s += sunApplySource(false);
     s += "    if (u.draw_flags.y > 0.5) {\n";
     s += "        float alpha = round(clamp(shaded.a, 0.0, 1.0) * 255.0);\n";
@@ -3156,6 +3168,30 @@ bool effectsCreate(RecompD3dPresenter *presenter)
     return true;
 }
 
+/* A character piece: a skinned joint, or a lit rigid piece no larger than a
+   limb (sampled through its indices, in world space). */
+bool effectsCharacterPiece(const RecompD3dPresenterDrawCommand &draw)
+{
+    if (draw.blend_weight_count) return true;
+    if (!draw.directional.enabled || !draw.index_count || draw.vertex_stride < 12u) return false;
+    const uint32_t samples = std::min(draw.index_count, 24u);
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t k = 0; k < samples; ++k) {
+        const uint32_t v = indices[k * draw.index_count / samples];
+        if (v >= draw.vertex_count) return false;
+        float p[3];
+        std::memcpy(p, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride, sizeof p);
+        const float *m = draw.world[0];
+        for (unsigned a = 0; a < 3; ++a) {
+            const float w = p[0] * m[a] + p[1] * m[4 + a] + p[2] * m[8 + a] + m[12 + a];
+            low[a] = std::min(low[a], w);
+            high[a] = std::max(high[a], w);
+        }
+    }
+    return std::max({high[0] - low[0], high[1] - low[1], high[2] - low[2]}) <= 1.2f;
+}
+
 /* Characters are drawn as skinned joints and lit rigid pieces, one per limb.
    Each candidate's sampled vertices give its middle on screen and its view
    depth; the one nearest the picture's middle is the subject. */
@@ -3213,6 +3249,7 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     if (!e.enabled) return presenter->backbuffer_resolve;
     RecompCameraEffects settings;
     recomp_camera_effects_take(&settings);
+    e.tint = recomp_camera_effects_scene_tint(e.tint_rgb);
     const float subject = e.subject_depth;
     recomp_camera_effects_report_subject(subject);
     e.subject_depth = e.subject_offset = 0.0f;
@@ -3796,6 +3833,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // View depth clears with the main depth buffer, to the farthest a half float holds.
         SDL_GPUColorTargetInfo color_infos[2] = {color_info, {}};
         const bool view_depth = is_main && presenter->effects.enabled && clear.clear_depth;
+        if (is_main && clear.clear_depth) presenter->effects.scene_drawn = false;
         if (view_depth) {
             color_infos[1].texture = presenter->effects.scene_depth;
             color_infos[1].load_op = SDL_GPU_LOADOP_CLEAR;
@@ -4083,7 +4121,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         if (draw.directional.enabled && !draw.program_count) {
             const auto &light = draw.directional;
-            float *dir_constants = constants + 144;
+            float *dir_constants = constants + 148;
             std::memcpy(dir_constants, light.normal_transforms, sizeof(light.normal_transforms));
             std::memcpy(dir_constants + 64, light.ambient_emissive, sizeof(light.ambient_emissive));
             std::memcpy(dir_constants + 68, light.material_diffuse, sizeof(light.material_diffuse));
@@ -4093,6 +4131,20 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             constants[141] = light.normalize ? 1.0f : 0.0f;
             constants[142] = static_cast<float>(light.count);
         }
+        // Time of day tints what the game does not light: the baked stage and the sky.
+        // Unlit 3D draws (vertex programs too: the tint is per pixel) and 2D
+        // backgrounds before them take it; lit scenery, such as the sea, keeps its
+        // relit lights and tints only its own glow, and characters only relight.
+        if (presenter->effects.tint && is_main) {
+            const bool background = layout.pretransformed && !presenter->effects.scene_drawn;
+            if ((!layout.pretransformed && !draw.directional.enabled) || background) {
+                std::memcpy(constants + 144, presenter->effects.tint_rgb, 3 * sizeof(float));
+                constants[147] = 1.0f;
+            } else if (draw.directional.enabled && !draw.program_count && !effectsCharacterPiece(draw)) {
+                for (unsigned c = 0; c < 3; ++c) constants[148 + 64 + c] *= presenter->effects.tint_rgb[c];
+            }
+        }
+        if (is_main && !layout.pretransformed) presenter->effects.scene_drawn = true;
 
         constants[64] = (texture != nullptr) ? 1.0f : 0.0f;
         constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;

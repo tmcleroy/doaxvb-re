@@ -79,6 +79,12 @@ int main(void)
     check(settings.hide_others && !settings.hide_ball, "hiding toggles one thing");
     recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_SHOT_SIZE, 9, &fov, 0.0f);
     check(settings.shot_size == 4u, "screenshots stop at 4x");
+    recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_TIME_OF_DAY, 1, &fov, 0.0f);
+    recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
+    check(drawn.hour == 6.0f, "the first time of day is 06:00");
+    recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_TIME_OF_DAY, 100, &fov, 0.0f);
+    recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
+    check(drawn.hour == 22.0f, "the last is 22:00");
     char line[96];
     recomp_camera_settings_describe(&settings, RECOMP_CAMERA_SETTING_APERTURE, fov, 0.0f, line, sizeof line);
     check(strcmp(line, "Aperture: f/1.4") == 0, "rows describe themselves");

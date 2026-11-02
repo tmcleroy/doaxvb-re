@@ -50,3 +50,17 @@ int recomp_viewer_court_stage(uint32_t court, RecompViewerTime time, uint8_t own
     uint8_t stage = places[court_place[court]].stage[time];
     return stage != 0u ? stage : own_stage;
 }
+
+RecompViewerTime recomp_viewer_stage_time(uint8_t stage)
+{
+    switch (stage) {
+    case 4: case 6: case 8: case 11: case 26: case 28: case 30: case 33: case 35: case 51:
+        return RECOMP_VIEWER_TIME_DAY;
+    case 5: case 7: case 9: case 12: case 27: case 31: case 34: case 36: case 52:
+        return RECOMP_VIEWER_TIME_SUNSET;
+    case 29: case 39: case 40: case 41: case 45: case 46: case 47: case 48: case 50:
+        return RECOMP_VIEWER_TIME_DUSK;
+    default:
+        return RECOMP_VIEWER_TIME_COURT;
+    }
+}

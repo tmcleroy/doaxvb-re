@@ -51,6 +51,9 @@ typedef struct RecompCameraEffects {
        it; the last tile saves the whole picture. One tile is a plain frame. */
     unsigned tiles, tile;
     bool capture;
+    /* Time of day in hours (time_of_day.h), or below zero for the stage's
+       own; the scene lights take it while the camera flies. */
+    float hour;
 } RecompCameraEffects;
 
 /* Blur, in pixels of a frame `height` pixels tall, of a point `depth` world
@@ -72,6 +75,11 @@ float recomp_camera_effects_subject(void);
 /* The presenter reports how many tiles of the big screenshot under way it
    has kept, so the free camera moves to the next only after one is kept. */
 void recomp_camera_effects_report_tiles_kept(unsigned kept);
+/* The scene lights report the tint the baked scene takes for the time of day
+   (draws the game does not light: the stage and the sky); off, the
+   presenter leaves them as drawn. */
+void recomp_camera_effects_report_scene_tint(bool on, const float tint[3]);
+bool recomp_camera_effects_scene_tint(float tint[3]);
 unsigned recomp_camera_effects_tiles_kept(void);
 
 #ifdef __cplusplus

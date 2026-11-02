@@ -1,4 +1,5 @@
 #include "stage_lights.h"
+#include "time_of_day.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -64,6 +65,27 @@ int main(void)
 
     check(recomp_stage_ambient_color(1.0f, 0.0f, 2.0f) == 0xFFFF00FFu, "channels clamp at 0 and 1");
     check(recomp_stage_ambient_color(0.5f, 0.25f, -1.0f) == 0xFF7F3F00u, "channels truncate their 255ths");
+
+    RecompTimeOfDayLook noon, sunset, between;
+    recomp_time_of_day_look(recomp_time_of_day_game_hour(0u), &noon);
+    recomp_time_of_day_look(recomp_time_of_day_game_hour(1u), &sunset);
+    check(noon.tint[0] == 1.0f && noon.fill == 1.0f, "the game's day is the reference");
+    recomp_time_of_day_look(0.5f * (recomp_time_of_day_game_hour(0u) + recomp_time_of_day_game_hour(1u)), &between);
+    check(between.elevation < noon.elevation && between.elevation > sunset.elevation, "the sun sinks through the afternoon");
+    RecompStageLight key = light;
+    key.kind = 1u;
+    key.diffuse[0] = 0.6f; key.diffuse[1] = 0.55f; key.diffuse[2] = 0.52f;
+    recomp_time_of_day_relight(&noon, &noon, 0u, &key);
+    check(fabsf(key.diffuse[2] - 0.52f) < 1e-5f, "the stage's own time changes nothing");
+    recomp_time_of_day_relight(&noon, &sunset, 0u, &key);
+    check(key.diffuse[2] < 0.52f * 0.8f && key.diffuse[0] > key.diffuse[2], "sunset warms the key light");
+    float tint[3];
+    recomp_time_of_day_tint(&noon, &sunset, tint);
+    check(tint[0] > tint[2], "the baked scene warms at sunset");
+    const float from[3] = {0.3f, 0.9f, -0.3f};
+    float aimed[3];
+    recomp_time_of_day_direction(from, 0.2f, aimed);
+    check(fabsf(aimed[1] - sinf(0.2f)) < 1e-5f && fabsf(aimed[0] + aimed[2]) < 1e-5f, "elevation set, heading kept");
 
     if (failures) return 1;
     puts("stage lights: all passed");

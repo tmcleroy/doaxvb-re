@@ -33,6 +33,9 @@ int main(void)
     check(recomp_viewer_time_step(RECOMP_VIEWER_TIME_DUSK, 1) == RECOMP_VIEWER_TIME_COURT, "next wraps");
     check(recomp_viewer_time_step(RECOMP_VIEWER_TIME_COURT, -1) == RECOMP_VIEWER_TIME_DUSK, "previous wraps");
     check(strcmp(recomp_viewer_time_name(RECOMP_VIEWER_TIME_SUNSET), "Sunset") == 0, "names");
+    check(recomp_viewer_stage_time(4u) == RECOMP_VIEWER_TIME_DAY && recomp_viewer_stage_time(5u) == RECOMP_VIEWER_TIME_SUNSET &&
+        recomp_viewer_stage_time(39u) == RECOMP_VIEWER_TIME_DUSK && recomp_viewer_stage_time(25u) == RECOMP_VIEWER_TIME_COURT,
+        "stages know their time");
 
     if (failures == 0) printf("viewer scene test passed\n");
     return failures == 0 ? 0 : 1;
