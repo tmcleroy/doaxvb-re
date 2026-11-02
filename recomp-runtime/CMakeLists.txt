@@ -388,6 +388,8 @@ add_executable(recomp_runtime_test
     body_joints_adapter.c
     body_morph.c
     body_morph_adapter.c
+    stage_lights.c
+    stage_lights_adapter.c
     ohci_model.c
     ohci_model_test.c
     apu_model.c
@@ -708,6 +710,8 @@ if(RECOMP_PROGRAM_DIR)
         body_joints_adapter.c
         body_morph.c
         body_morph_adapter.c
+        stage_lights.c
+        stage_lights_adapter.c
         cpu_exhibition.c
         title_idle.c
         free_camera.c
@@ -974,6 +978,7 @@ add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
 add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
 add_executable(recomp_camera_effects_test camera_effects.c camera_settings.c camera_effects_test.c)
+add_executable(recomp_stage_lights_test stage_lights.c stage_lights_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
 if(WIN32)
     target_link_libraries(recomp_screenshot_test PRIVATE shell32 ole32 uuid)
@@ -1020,6 +1025,7 @@ add_test(NAME recomp-runtime-scene-freeze COMMAND recomp_scene_freeze_test)
 add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-overlay-text COMMAND recomp_overlay_text_test)
 add_test(NAME recomp-runtime-camera-effects COMMAND recomp_camera_effects_test)
+add_test(NAME recomp-runtime-stage-lights COMMAND recomp_stage_lights_test)
 add_test(NAME recomp-runtime-screenshot COMMAND recomp_screenshot_test)
 add_test(NAME recomp-runtime-viewer-scene COMMAND recomp_viewer_scene_test)
 add_test(NAME recomp-runtime-suit-switch COMMAND recomp_suit_switch_test)

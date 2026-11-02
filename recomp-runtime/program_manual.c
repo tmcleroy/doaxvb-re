@@ -3,6 +3,7 @@
 #include "game_scene.h"
 #include "animation_track_adapter.h"
 #include "body_joints_adapter.h"
+#include "stage_lights_adapter.h"
 #include "body_morph_adapter.h"
 #include "title_idle.h"
 #include "free_camera_adapter.h"
@@ -364,6 +365,12 @@ RecompFunction recomp_lookup_manual(uint32_t guest_address)
        (0x000672B0) stays generated. docs/body-joints.md. */
     if (function == NULL) {
         function = recomp_body_joints_lookup_manual(guest_address);
+    }
+    /* Readable scene lights: a game light record to a D3D light (0x0017CB50)
+       and the ambient colour (0x0017CE00); the direction from angles
+       (0x0017B150) stays generated. docs/stage-lights.md. */
+    if (function == NULL) {
+        function = recomp_stage_lights_lookup_manual(guest_address);
     }
     /* Readable blend of one morph record (0x00064FD0: hands, face, chest);
        the D3D vertex buffer lock it calls (0x001E4D00) stays the library's.

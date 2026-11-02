@@ -1,0 +1,164 @@
+#include "stage_lights_adapter.h"
+#include "stage_lights.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Scene lights (docs/stage-lights.md).
+
+   Every scene's frame code copies its stage rig, four game light records of
+   0x58 bytes at 0x009D4F58, to 0x009D5240 and calls 0x0017CB50 once a light
+   (EDI the record, the stack argument its slot 0 to 3). That fills slot n of
+   the D3D light table at 0x00A243F0 + n * 0x70 (stage_lights.h). It then
+   calls 0x0017CE00 with light 0's ambient colour (three floats on the stack),
+   which packs the ambient render state into 0x00A243E4, and 0x0017CC50,
+   which hands the table and the ambient colour to the device.
+
+   0x0017CB50 asks 0x0017B150 for the light's direction from its two binary
+   angles (-yaw, pitch); that and the sine and cosine it calls (0x0017AB70, a
+   library polynomial) stay generated, called here as they are by the game. */
+enum {
+    LIGHT_TABLE = 0x00A243F0u,
+    AMBIENT = 0x00A243E4u,
+    LIGHT_TO_D3D = 0x0017CB50u,
+    PACK_AMBIENT = 0x0017CE00u,
+    ANGLES_TO_DIRECTION = 0x0017B150u,
+    SLOTS = 4u,
+};
+
+#ifdef RECOMP_FULL_PROGRAM
+void sub_0017CB50(void);
+void sub_0017CE00(void);
+
+/* 0x0017B150 with (-yaw, pitch) on the stack writes the direction the light
+   comes from to [ESI]; registers and the FPU are left as they were. */
+static void toward_from_angles(int32_t yaw, int32_t pitch, float toward[3])
+{
+    const RecompRegisters registers = recomp_runtime.registers;
+    RecompFpuContext fpu;
+    recomp_fpu_context_save(&fpu);
+    const uint32_t buffer = recomp_runtime.registers.esp - 0x40u;
+    recomp_runtime.registers.esp = buffer - 12u;
+    *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+    *recomp_memory_u32(recomp_runtime.registers.esp + 4u) = (uint32_t)-yaw;
+    *recomp_memory_u32(recomp_runtime.registers.esp + 8u) = (uint32_t)pitch;
+    recomp_runtime.registers.esi = buffer;
+    recomp_dispatch(ANGLES_TO_DIRECTION);
+    recomp_guest_load(toward, buffer, 3u * sizeof(float));
+    recomp_runtime.registers = registers;
+    recomp_fpu_context_restore(&fpu);
+}
+
+/* 0x0017CB50: EDI the game record, [ESP+4] the slot (ESP points at the
+   return slot the caller pushed, which returning pops). As the game leaves
+   them: EAX whether the light is on, ECX the record's kind, EDX its
+   specular scale. */
+static void light_to_d3d(void)
+{
+    const uint32_t record = recomp_runtime.registers.edi;
+    const uint32_t slot = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    uint8_t bytes[RECOMP_STAGE_LIGHT_SIZE], out[RECOMP_STAGE_D3D_LIGHT_SIZE];
+    RecompStageLight light;
+    float toward[3];
+    recomp_guest_load(bytes, record, sizeof bytes);
+    recomp_stage_light_read(bytes, &light);
+    toward_from_angles(light.yaw, light.pitch, toward);
+    recomp_stage_light_to_d3d(&light, toward, out);
+    recomp_guest_store(LIGHT_TABLE + (uint32_t)((int32_t)slot * 0x70), out, sizeof out);
+    recomp_runtime.registers.eax = light.kind != 0u;
+    recomp_runtime.registers.ecx = light.kind;
+    memcpy(&recomp_runtime.registers.edx, &light.specular_scale, 4);
+    recomp_runtime.registers.esp += 4u; /* ret: the caller pops the slot */
+}
+
+/* 0x0017CE00: three floats on the stack, red first. EAX is left as the
+   blue channel's byte, as the game leaves it. */
+static void pack_ambient(void)
+{
+    float rgb[3];
+    recomp_guest_load(rgb, recomp_runtime.registers.esp + 4u, sizeof rgb);
+    const uint32_t color = recomp_stage_ambient_color(rgb[0], rgb[1], rgb[2]);
+    recomp_guest_store(AMBIENT, &color, sizeof color);
+    recomp_runtime.registers.eax = color & 0xFFu;
+    recomp_runtime.registers.esp += 4u; /* ret: the caller pops the colour */
+}
+
+/* RECOMP_STAGE_LIGHTS_VERIFY=1: run the generated code, keep what it wrote,
+   put memory back, run the readable code, and compare. */
+static bool verifying(void)
+{
+    static int verify = -1;
+    if (verify < 0) verify = getenv("RECOMP_STAGE_LIGHTS_VERIFY") != NULL;
+    return verify != 0;
+}
+
+static void verify_call(RecompFunction generated, RecompFunction readable, uint32_t address,
+    uint32_t size, const char *name)
+{
+    static unsigned long long calls[2], differing[2];
+    const int which = readable == pack_ambient;
+    uint8_t before[RECOMP_STAGE_D3D_LIGHT_SIZE], theirs[RECOMP_STAGE_D3D_LIGHT_SIZE], mine[RECOMP_STAGE_D3D_LIGHT_SIZE];
+    const RecompRegisters registers = recomp_runtime.registers;
+    RecompFpuContext fpu;
+    recomp_fpu_context_save(&fpu);
+    recomp_guest_load(before, address, size);
+    generated();
+    const RecompRegisters after = recomp_runtime.registers;
+    recomp_guest_load(theirs, address, size);
+    recomp_guest_store(address, before, size);
+    recomp_runtime.registers = registers;
+    recomp_fpu_context_restore(&fpu);
+    readable();
+    recomp_guest_load(mine, address, size);
+    ++calls[which];
+    const bool same_registers = after.eax == recomp_runtime.registers.eax &&
+        after.esp == recomp_runtime.registers.esp && after.ebx == recomp_runtime.registers.ebx &&
+        after.esi == recomp_runtime.registers.esi && after.edi == recomp_runtime.registers.edi;
+    if (memcmp(theirs, mine, size) != 0 || !same_registers) {
+        if (differing[which]++ < 8u) {
+            fprintf(stderr, "stage lights verify: %s differs (call %llu, registers %s)\n", name,
+                calls[which], same_registers ? "same" : "differ");
+            for (uint32_t i = 0u; i < size; i += 4u) {
+                uint32_t a, b;
+                memcpy(&a, theirs + i, 4);
+                memcpy(&b, mine + i, 4);
+                if (a != b) fprintf(stderr, "  +0x%02X generated %08X readable %08X\n", i, a, b);
+            }
+        }
+    }
+    if (calls[which] % 600u == 0u)
+        fprintf(stderr, "stage lights verify: %s %llu calls, %llu differing\n", name, calls[which], differing[which]);
+}
+
+static void light_to_d3d_entry(void)
+{
+    if (!verifying()) {
+        light_to_d3d();
+        return;
+    }
+    const uint32_t slot = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    verify_call(sub_0017CB50, light_to_d3d, LIGHT_TABLE + slot * 0x70u, RECOMP_STAGE_D3D_LIGHT_SIZE, "light");
+}
+
+static void pack_ambient_entry(void)
+{
+    if (verifying()) verify_call(sub_0017CE00, pack_ambient, AMBIENT, 4u, "ambient");
+    else pack_ambient();
+}
+
+RecompFunction recomp_stage_lights_lookup_manual(uint32_t guest_address)
+{
+    /* Seams: the game's light record to D3D light (0x0017CB50) and ambient
+       packing (0x0017CE00), manual call targets in the recipe. */
+    if (guest_address == LIGHT_TO_D3D) return light_to_d3d_entry;
+    if (guest_address == PACK_AMBIENT) return pack_ambient_entry;
+    return NULL;
+}
+#else
+RecompFunction recomp_stage_lights_lookup_manual(uint32_t guest_address)
+{
+    (void)guest_address;
+    return NULL;
+}
+#endif
