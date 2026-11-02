@@ -296,6 +296,7 @@ bool recomp_input_host_key(RecompInputHostKey key)
     case RECOMP_INPUT_HOST_KEY_SHIFT:
         return focused() && (pressed(KEY(VK_LSHIFT, SDL_SCANCODE_LSHIFT)) ||
             pressed(KEY(VK_RSHIFT, SDL_SCANCODE_RSHIFT)));
+    case RECOMP_INPUT_HOST_KEY_TAB: return focused() && pressed(KEY(VK_TAB, SDL_SCANCODE_TAB));
     case RECOMP_INPUT_HOST_KEY_CONTROL:
         return focused() && (pressed(KEY(VK_LCONTROL, SDL_SCANCODE_LCTRL)) ||
             pressed(KEY(VK_RCONTROL, SDL_SCANCODE_RCTRL)));

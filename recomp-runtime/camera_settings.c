@@ -1,0 +1,155 @@
+#include "camera_settings.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+static const float F_NUMBERS[] = {1.4f, 2.0f, 2.8f, 4.0f, 5.6f, 8.0f, 11.0f, 16.0f, 22.0f};
+enum { F_NUMBER_COUNT = sizeof F_NUMBERS / sizeof F_NUMBERS[0] };
+static const struct { float aspect; const char *name; } LETTERBOXES[] = {
+    {0.0f, "Off"}, {2.39f, "2.39:1"}, {1.85f, "1.85:1"}, {16.0f / 9.0f, "16:9"}, {4.0f / 3.0f, "4:3"}, {1.0f, "1:1"}};
+enum { LETTERBOX_COUNT = sizeof LETTERBOXES / sizeof LETTERBOXES[0] };
+static const float PI = 3.14159265f;
+static const float MIN_FOCUS = 0.2f, MAX_FOCUS = 200.0f;
+static const float MIN_FOV_DEGREES = 5.0f, MAX_FOV_DEGREES = 120.0f;
+static const float MAX_ROLL = 45.0f;
+
+void recomp_camera_settings_default(RecompCameraSettings *settings)
+{
+    memset(settings, 0, sizeof *settings);
+    settings->focus = RECOMP_CAMERA_FOCUS_CHARACTER;
+    settings->focus_distance = 2.5f;
+    settings->aperture = 1u; /* f/2 */
+}
+
+static int wrap(int value, int count)
+{
+    value %= count;
+    return value < 0 ? value + count : value;
+}
+
+static unsigned clamp_index(int value, unsigned count)
+{
+    return value < 0 ? 0u : (unsigned)value >= count ? count - 1u : (unsigned)value;
+}
+
+void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraSettingRow row,
+    int steps, float *fov, float character_focus)
+{
+    switch (row) {
+    case RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD:
+        if (steps % 2 != 0) settings->depth_of_field = !settings->depth_of_field;
+        break;
+    case RECOMP_CAMERA_SETTING_FOCUS:
+        settings->focus = (RecompCameraFocus)wrap((int)settings->focus + steps, RECOMP_CAMERA_FOCUS_COUNT);
+        /* Manual focus starts where the character is. */
+        if (settings->focus == RECOMP_CAMERA_FOCUS_MANUAL && character_focus > 0.0f)
+            settings->focus_distance = character_focus;
+        break;
+    case RECOMP_CAMERA_SETTING_FOCUS_DISTANCE:
+        /* Changing the distance makes the focus manual. */
+        if (settings->focus != RECOMP_CAMERA_FOCUS_MANUAL && character_focus > 0.0f)
+            settings->focus_distance = character_focus;
+        settings->focus = RECOMP_CAMERA_FOCUS_MANUAL;
+        settings->focus_distance *= powf(1.05f, (float)steps);
+        if (settings->focus_distance < MIN_FOCUS) settings->focus_distance = MIN_FOCUS;
+        if (settings->focus_distance > MAX_FOCUS) settings->focus_distance = MAX_FOCUS;
+        break;
+    case RECOMP_CAMERA_SETTING_APERTURE:
+        settings->aperture = clamp_index((int)settings->aperture + steps, F_NUMBER_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_FIELD_OF_VIEW:
+        if (fov != NULL) {
+            float degrees = roundf(*fov * 180.0f / PI) - (float)steps;
+            if (degrees < MIN_FOV_DEGREES) degrees = MIN_FOV_DEGREES;
+            if (degrees > MAX_FOV_DEGREES) degrees = MAX_FOV_DEGREES;
+            *fov = degrees * PI / 180.0f;
+        }
+        break;
+    case RECOMP_CAMERA_SETTING_ROLL:
+        settings->roll += (float)steps;
+        if (settings->roll < -MAX_ROLL) settings->roll = -MAX_ROLL;
+        if (settings->roll > MAX_ROLL) settings->roll = MAX_ROLL;
+        break;
+    case RECOMP_CAMERA_SETTING_FILTER:
+        settings->filter = (RecompCameraFilter)wrap((int)settings->filter + steps, RECOMP_CAMERA_FILTER_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_VIGNETTE:
+        settings->vignette = clamp_index((int)settings->vignette + steps, 11u);
+        break;
+    case RECOMP_CAMERA_SETTING_GRAIN:
+        settings->grain = clamp_index((int)settings->grain + steps, 11u);
+        break;
+    case RECOMP_CAMERA_SETTING_LETTERBOX:
+        settings->letterbox = (unsigned)wrap((int)settings->letterbox + steps, LETTERBOX_COUNT);
+        break;
+    default:
+        break;
+    }
+}
+
+void recomp_camera_settings_describe(const RecompCameraSettings *settings, RecompCameraSettingRow row,
+    float fov, float character_focus, char *text, size_t size)
+{
+    static const char *const focus_names[RECOMP_CAMERA_FOCUS_COUNT] = {"On her", "Centre of frame", "Manual"};
+    switch (row) {
+    case RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD:
+        snprintf(text, size, "Depth of field: %s", settings->depth_of_field ? "On" : "Off");
+        break;
+    case RECOMP_CAMERA_SETTING_FOCUS:
+        snprintf(text, size, "Focus: %s", focus_names[settings->focus % RECOMP_CAMERA_FOCUS_COUNT]);
+        break;
+    case RECOMP_CAMERA_SETTING_FOCUS_DISTANCE:
+        if (settings->focus == RECOMP_CAMERA_FOCUS_MANUAL)
+            snprintf(text, size, "Focus distance: %.2f m", settings->focus_distance);
+        else if (settings->focus == RECOMP_CAMERA_FOCUS_CHARACTER && character_focus > 0.0f)
+            snprintf(text, size, "Focus distance: %.2f m (on her)", character_focus);
+        else
+            snprintf(text, size, "Focus distance: automatic");
+        break;
+    case RECOMP_CAMERA_SETTING_APERTURE:
+        snprintf(text, size, "Aperture: f/%g", F_NUMBERS[settings->aperture % F_NUMBER_COUNT]);
+        break;
+    case RECOMP_CAMERA_SETTING_FIELD_OF_VIEW:
+        snprintf(text, size, "Field of view: %.0f deg", fov * 180.0f / PI);
+        break;
+    case RECOMP_CAMERA_SETTING_ROLL:
+        snprintf(text, size, "Roll: %.0f deg", settings->roll);
+        break;
+    case RECOMP_CAMERA_SETTING_FILTER:
+        snprintf(text, size, "Filter: %s", recomp_camera_effects_filter_name(settings->filter));
+        break;
+    case RECOMP_CAMERA_SETTING_VIGNETTE:
+        snprintf(text, size, "Vignette: %u%%", settings->vignette * 10u);
+        break;
+    case RECOMP_CAMERA_SETTING_GRAIN:
+        snprintf(text, size, "Film grain: %u%%", settings->grain * 10u);
+        break;
+    case RECOMP_CAMERA_SETTING_LETTERBOX:
+        snprintf(text, size, "Letterbox: %s", LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].name);
+        break;
+    default:
+        snprintf(text, size, "?");
+        break;
+    }
+}
+
+void recomp_camera_settings_effects(const RecompCameraSettings *settings, float fov,
+    float character_focus, RecompCameraEffects *effects)
+{
+    memset(effects, 0, sizeof *effects);
+    effects->depth_of_field = settings->depth_of_field;
+    (void)character_focus;
+    effects->focus = settings->focus == RECOMP_CAMERA_FOCUS_MANUAL ? settings->focus_distance
+        : settings->focus == RECOMP_CAMERA_FOCUS_CHARACTER ? RECOMP_CAMERA_FOCUS_SUBJECT : 0.0f;
+    effects->aperture = F_NUMBERS[settings->aperture % F_NUMBER_COUNT];
+    effects->fov = fov;
+    effects->roll = settings->roll * PI / 180.0f;
+    effects->filter = settings->filter;
+    effects->vignette = (float)settings->vignette / 10.0f;
+    effects->grain = (float)settings->grain / 10.0f;
+    effects->letterbox = LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].aspect;
+    effects->active = effects->depth_of_field || settings->roll != 0.0f ||
+        settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
+        settings->grain != 0u || effects->letterbox > 0.0f;
+}

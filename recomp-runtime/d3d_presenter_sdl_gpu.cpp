@@ -5,6 +5,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_texture_model.h"
 #include "d3d_vertex_program.h"
+#include "camera_effects.h"
 
 #include <SDL3/SDL.h>
 
@@ -394,6 +395,8 @@ struct PipelineKey {
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     bool alpha_to_coverage = false;
+    // Main-target draws also write view depth for camera effects.
+    bool depth_output = false;
 
     bool depth_test_enable = false;
     bool depth_write_enable = false;
@@ -423,6 +426,7 @@ struct PipelineKey {
                depth_format == o.depth_format &&
                sample_count == o.sample_count &&
                alpha_to_coverage == o.alpha_to_coverage &&
+               depth_output == o.depth_output &&
                depth_test_enable == o.depth_test_enable &&
                depth_write_enable == o.depth_write_enable &&
                depth_func == o.depth_func &&
@@ -495,7 +499,7 @@ struct PipelineKeyHash {
         size_t h = k.fvf ^ (static_cast<size_t>(k.vertex_stride) << 8) ^ (static_cast<size_t>(k.program_count) << 16) ^ k.program_hash;
         h ^= (static_cast<size_t>(k.primitive_type) << 24) ^ (static_cast<size_t>(k.cull_mode) << 28);
         h ^= (static_cast<size_t>(k.color_format) << 4) ^ (static_cast<size_t>(k.depth_format) << 12);
-        h ^= (static_cast<size_t>(k.sample_count) << 30);
+        h ^= (static_cast<size_t>(k.sample_count) << 30) ^ (static_cast<size_t>(k.depth_output) << 31);
         h ^= (static_cast<size_t>(k.color_write_mask) << 20) ^ (static_cast<size_t>(k.blend_enable) << 27);
         h ^= (static_cast<size_t>(k.src_factor) << 2) ^ (static_cast<size_t>(k.dst_factor) << 6);
         h ^= (static_cast<size_t>(k.depth_test_enable) << 1) ^ (static_cast<size_t>(k.depth_func) << 8);
@@ -582,6 +586,25 @@ struct RecompD3dPresenter {
     SDL_GPUGraphicsPipeline *last_pipeline = nullptr;
 
     SdlSunShadow sun;
+
+    /* Camera effects (camera_effects.h), available with the free camera:
+       main-target draws write their view depth into scene_depth beside the
+       colour, and a post pass at present draws the effects into
+       effects_output, which the window and screenshots show instead. */
+    struct {
+        bool enabled = false;
+        bool depth_resolved = false;
+        // The scene cleared its depth this frame; a held picture or a scene
+        // change copies a frame without drawing depth, so it gets no blur.
+        bool depth_drawn = false;
+        // The character part nearest the middle of this frame: its distance
+        // off-centre (in NDC) and its view depth, for "focus on her".
+        float subject_offset = 0.0f, subject_depth = 0.0f;
+        SDL_GPUTexture *scene_depth = nullptr, *depth_resolve = nullptr, *output = nullptr;
+        SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
+        SDL_GPUGraphicsPipeline *pipeline = nullptr;
+        uint32_t frame = 0;
+    } effects;
 };
 
 inline uint32_t mainHeight(const RecompD3dPresenter *p) {
@@ -1060,7 +1083,7 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
 
 std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                            uint32_t program_count, const uint32_t (*program_tokens)[4],
-                           bool sun = false)
+                           bool sun = false, bool depth_output = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -1114,7 +1137,11 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
         s += "    float3 sun_world [[user(sun_world)]];\n";
         s += "    float3 sun_normal [[user(sun_normal)]];\n";
     }
+    // Camera effects: the distance along the view, for depth of field.
+    if (depth_output) s += "    float view_depth [[user(view_depth)]];\n";
     s += "};\n";
+    const std::string vs_return = depth_output ? "    out.view_depth = out.position.w;\n    return out;\n"
+                                               : "    return out;\n";
 
     // vs_main
     s += program_count
@@ -1130,7 +1157,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
         std::string prog_body;
         if (recomp_d3d_vertex_program_msl_source(program_tokens, program_count, prog_body)) {
             s += prog_body;
-            s += "    return out;\n";
+            s += vs_return;
             s += "}\n";
             has_prog = true;
         }
@@ -1232,7 +1259,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                 s += "    }\n";
             }
         }
-        s += "    return out;\n";
+        s += vs_return;
         s += "}\n";
     }
 
@@ -1260,7 +1287,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     if (sun) s += kMslSunVisibility;
 
     // ps_main
-    s += "fragment float4 ps_main(VSOut in [[stage_in]],\n";
+    if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float depth [[color(1)]]; };\n";
+    s += depth_output ? "fragment PSOut ps_main(VSOut in [[stage_in]],\n" : "fragment float4 ps_main(VSOut in [[stage_in]],\n";
     s += "                        constant TransformUniforms &u [[buffer(0)]],\n";
     if (sun) s += "                        constant SunUniforms &sun [[buffer(1)]],\n";
     s += "                        texture2d<float> guest_texture [[texture(0)]],\n";
@@ -1331,7 +1359,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "            (func == 6 && alpha >= ref);\n";
     s += "        if (!alpha_pass) discard_fragment();\n";
     s += "    }\n";
-    s += "    return shaded;\n";
+    s += depth_output ? "    return PSOut{shaded, in.view_depth};\n" : "    return shaded;\n";
     s += "}\n";
 
     return s;
@@ -1399,7 +1427,7 @@ std::string glslSunUniforms(bool fragment)
 
 std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                                   uint32_t program_count, const uint32_t (*program_tokens)[4],
-                                  bool sun = false)
+                                  bool sun = false, bool depth_output = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -1458,6 +1486,8 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
         s += "layout(location = 7) out vec3 v_sun_world;\n";
         s += "layout(location = 8) out vec3 v_sun_normal;\n";
     }
+    if (depth_output) s += "layout(location = 9) out float v_view_depth;\n";
+    const std::string vs_end = depth_output ? "    v_view_depth = gl_Position.w;\n}\n" : "}\n";
 
     s += "void main() {\n";
 
@@ -1466,7 +1496,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
         std::string prog_body;
         if (recomp_d3d_vertex_program_glsl_source(program_tokens, program_count, prog_body)) {
             s += prog_body;
-            s += "}\n";
+            s += vs_end;
             has_prog = true;
         }
         // Like the D3D11 presenter, skip a draw whose program does not translate.
@@ -1568,13 +1598,13 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
                 s += "    }\n";
             }
         }
-        s += "}\n";
+        s += vs_end;
     }
     return s;
 }
 
 std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
-                                    uint32_t program_count, bool sun = false)
+                                    uint32_t program_count, bool sun = false, bool depth_output = false)
 {
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
     const bool four_coords = (layout.texcoord_count == 4u);
@@ -1608,6 +1638,10 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     }
 
     s += "layout(location = 0) out vec4 out_color;\n";
+    if (depth_output) {
+        s += "layout(location = 9) in float v_view_depth;\n";
+        s += "layout(location = 1) out float out_depth;\n";
+    }
     if (two_coords) {
         // Cubic B-spline in four bilinear taps; see the Metal shader.
         s += "vec4 sample_smooth(sampler2D t, vec2 uv) {\n";
@@ -1689,6 +1723,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "        if (!alpha_pass) discard;\n";
     s += "    }\n";
     s += "    out_color = shaded;\n";
+    if (depth_output) s += "    out_depth = v_view_depth;\n";
     s += "}\n";
 
     return s;
@@ -1801,9 +1836,11 @@ ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, Shade
 }
 
 ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dVertexLayout &layout,
-                                 uint32_t fvf, uint32_t program_count, const uint32_t (*program_tokens)[4])
+                                 uint32_t fvf, uint32_t program_count, const uint32_t (*program_tokens)[4],
+                                 bool depth_output = false)
 {
-    uint64_t shader_key = fvf ^ (static_cast<uint64_t>(program_count) << 32);
+    uint64_t shader_key = fvf ^ (static_cast<uint64_t>(program_count) << 32) ^
+        (depth_output ? UINT64_C(1) << 63 : 0u);
     if (program_count && program_tokens) {
         shader_key ^= programHash(program_tokens, program_count);
     }
@@ -1820,11 +1857,11 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     const bool sun = sunShader(presenter, layout, program_count);
 
     if (presenter->use_spirv) {
-        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens, sun);
+        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens, sun, depth_output);
         if (vs_source.empty()) return rememberShaderPair(presenter, shader_key, {});
         const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
         const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
-            buildGlslFragmentShader(layout, fvf, program_count, sun), SDL_GPU_SHADERSTAGE_FRAGMENT);
+            buildGlslFragmentShader(layout, fvf, program_count, sun, depth_output), SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (vs_spv.empty() || fs_spv.empty()) {
             std::fprintf(stderr, "[presenter] failed to compile GLSL->SPIR-V shader fvf=0x%08X\n", fvf);
             return rememberShaderPair(presenter, shader_key, {});
@@ -1863,7 +1900,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         return rememberShaderPair(presenter, shader_key, {vs, fs});
     }
 
-    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens, sun);
+    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens, sun, depth_output);
     if (msl.empty()) return rememberShaderPair(presenter, shader_key, {});
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
@@ -1901,6 +1938,8 @@ void precompileBootShaders(RecompD3dPresenter *p)
         RecompD3dVertexLayout layout{};
         if (!recomp_d3d_fvf_layout(fvf, &layout)) continue;
         getOrCreateShaderPair(p, layout, fvf, 0u, nullptr);
+        // Main-target draws use the view-depth variant while camera effects are on.
+        if (p->effects.enabled) getOrCreateShaderPair(p, layout, fvf, 0u, nullptr, true);
     }
 }
 
@@ -1909,7 +1948,8 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
                                              const RecompD3dVertexLayout &layout,
                                              SDL_GPUTextureFormat color_fmt,
                                              SDL_GPUTextureFormat depth_fmt,
-                                             SDL_GPUSampleCount sample_count)
+                                             SDL_GPUSampleCount sample_count,
+                                             bool depth_output = false)
 {
     uint64_t prog_hash = draw.program_count ? programHash(draw.program, draw.program_count) : 0u;
 
@@ -1924,6 +1964,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     pkey.depth_format = depth_fmt;
     pkey.sample_count = sample_count;
     pkey.alpha_to_coverage = sample_count != SDL_GPU_SAMPLECOUNT_1 && draw.depth.alpha_test_enable;
+    pkey.depth_output = depth_output;
 
     pkey.depth_test_enable = draw.depth.depth_test_enable;
     pkey.depth_write_enable = draw.depth.depth_write_enable;
@@ -1971,7 +2012,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     }
 
     ShaderPair shaders = getOrCreateShaderPair(presenter, layout, draw.fvf, draw.program_count,
-                                               draw.program_count ? draw.program : nullptr);
+                                               draw.program_count ? draw.program : nullptr, depth_output);
     if (!shaders.vertex_shader || !shaders.fragment_shader) {
         presenter->pipelines[pkey] = nullptr;  // like D3D11, do not retry a failed draw state
         return nullptr;
@@ -2026,8 +2067,13 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     color_desc.blend_state.color_write_mask = pkey.color_write_mask;
     color_desc.blend_state.enable_color_write_mask = true;
 
-    pinfo.target_info.color_target_descriptions = &color_desc;
-    pinfo.target_info.num_color_targets = 1;
+    // View depth follows the depth buffer: only draws that write depth write it.
+    SDL_GPUColorTargetDescription color_descs[2] = {color_desc, {}};
+    color_descs[1].format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+    color_descs[1].blend_state.color_write_mask = pkey.depth_write_enable ? SDL_GPU_COLORCOMPONENT_R : 0;
+    color_descs[1].blend_state.enable_color_write_mask = true;
+    pinfo.target_info.color_target_descriptions = color_descs;
+    pinfo.target_info.num_color_targets = depth_output ? 2 : 1;
     pinfo.target_info.depth_stencil_format = depth_fmt;
     pinfo.target_info.has_depth_stencil_target = (depth_fmt != SDL_GPU_TEXTUREFORMAT_INVALID);
 
@@ -2176,7 +2222,16 @@ void flushSegment(RecompD3dPresenter *presenter)
         depth_info.stencil_store_op = SDL_GPU_STOREOP_STORE;
     }
 
-    SDL_GPURenderPass *rpass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
+    SDL_GPUColorTargetInfo color_infos[2] = {color_info, {}};
+    const bool depth_output = is_main && presenter->effects.enabled;
+    if (depth_output) {
+        color_infos[1].texture = presenter->effects.scene_depth;
+        color_infos[1].load_op = SDL_GPU_LOADOP_LOAD;
+        color_infos[1].store_op = SDL_GPU_STOREOP_STORE;
+        presenter->effects.depth_resolved = false;
+    }
+    SDL_GPURenderPass *rpass = SDL_BeginGPURenderPass(cmdbuf, color_infos, depth_output ? 2 : 1,
+        use_depth ? &depth_info : nullptr);
     if (rpass) {
         SDL_GPUViewport viewport{0.0f, 0.0f, seg.target_w, seg.target_h, 0.0f, 1.0f};
         SDL_SetGPUViewport(rpass, &viewport);
@@ -2877,12 +2932,338 @@ void sunRenderMap(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
     std::memset(sun.tested_camera, 0, sizeof sun.tested_camera);
 }
 
+// ---- Camera effects (camera_effects.h): one full-screen pass at present.
+
+// Uniforms of the effects pass, in floats.
+struct EffectsUniforms {
+    float size[4];     // width, height, 1/width, 1/height
+    float dof[4];      // on, blur scale (px), focus (world units; 0 = the centre's depth), largest blur (px)
+    float roll[4];     // cos, sin, zoom that keeps the corners filled, -
+    float look[4];     // vignette, grain, letterbox aspect (0 = none), frame number
+    float grade[3][4]; // colour matrix rows
+};
+
+/* Depth of field gathers along a golden-angle spiral out to the largest blur
+   (the single-pass bokeh of Dennis Gustafsson, 2018): each tap counts where its
+   own blur reaches the centre, and a tap behind the centre may spread no more
+   than the centre does, so a sharp foreground keeps its edge. */
+constexpr char kEffectsBody[] = R"(
+    float2 uv = pos.xy * p.size.zw;
+    float frame_aspect = p.size.x * p.size.w;
+    if (p.look.z > 0.0) {
+        if (p.look.z > frame_aspect) {
+            if (abs(uv.y - 0.5) > 0.5 * frame_aspect / p.look.z) return float4(0.0, 0.0, 0.0, 1.0);
+        } else if (abs(uv.x - 0.5) > 0.5 * p.look.z / frame_aspect) {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+    }
+    float2 centred = (uv - 0.5) * p.size.xy;
+    float2 turned = float2(centred.x * p.roll.x - centred.y * p.roll.y,
+                           centred.x * p.roll.y + centred.y * p.roll.x) / p.roll.z;
+    float2 st = turned * p.size.zw + 0.5;
+    float3 rgb = SAMPLE(color_tex, color_smp, st).rgb;
+    if (p.dof.x > 0.5) {
+        float focus = p.dof.z;
+        if (focus <= 0.0) {
+            float2 o = 24.0 * p.size.zw;
+            focus = min(min(SAMPLE(depth_tex, depth_smp, float2(0.5)).r, SAMPLE(depth_tex, depth_smp, float2(0.5) + o).r),
+                        min(SAMPLE(depth_tex, depth_smp, float2(0.5) - o).r,
+                            min(SAMPLE(depth_tex, depth_smp, float2(0.5 + o.x, 0.5 - o.y)).r,
+                                SAMPLE(depth_tex, depth_smp, float2(0.5 - o.x, 0.5 + o.y)).r)));
+        }
+        float centre_depth = SAMPLE(depth_tex, depth_smp, st).r;
+        float centre_blur = min(p.dof.y * abs(centre_depth - focus) / max(centre_depth, 0.001), p.dof.w);
+        float3 total = rgb;
+        float count = 1.0;
+        float step = max(p.dof.w * p.dof.w / 160.0, 0.5);
+        float radius = step;
+        float angle = 0.0;
+        for (int i = 0; i < 96 && radius < p.dof.w; ++i) {
+            float2 tap = st + float2(cos(angle), sin(angle)) * p.size.zw * radius;
+            float3 tap_rgb = SAMPLE(color_tex, color_smp, tap).rgb;
+            float tap_depth = SAMPLE(depth_tex, depth_smp, tap).r;
+            float tap_blur = min(p.dof.y * abs(tap_depth - focus) / max(tap_depth, 0.001), p.dof.w);
+            if (tap_depth > centre_depth) tap_blur = clamp(tap_blur, 0.0, centre_blur * 2.0);
+            float m = smoothstep(radius - 0.5, radius + 0.5, tap_blur);
+            total += MIX(total / count, tap_rgb, m);
+            count += 1.0;
+            radius += step / radius;
+            angle += 2.39996323;
+        }
+        rgb = total / count;
+    }
+    rgb = float3(dot(p.grade[0].xyz, rgb) + p.grade[0].w, dot(p.grade[1].xyz, rgb) + p.grade[1].w,
+                 dot(p.grade[2].xyz, rgb) + p.grade[2].w);
+    if (p.look.x > 0.0) {
+        float2 v = (uv - 0.5) * float2(frame_aspect, 1.0);
+        float reach = length(v) / length(float2(frame_aspect, 1.0) * 0.5);
+        rgb *= 1.0 - p.look.x * smoothstep(0.35, 1.05, reach);
+    }
+    if (p.look.y > 0.0) {
+        float n = FRACT(sin(dot(pos.xy + p.look.w * float2(12.9898, 4.1414), float2(12.9898, 78.233))) * 43758.5453);
+        rgb += p.look.y * 0.14 * (n - 0.5);
+    }
+    return float4(clamp(rgb, 0.0, 1.0), 1.0);
+)";
+
+std::string effectsSource(bool msl)
+{
+    std::string body = kEffectsBody;
+    const auto swap = [&body](const std::string &from, const std::string &to) {
+        for (size_t at = body.find(from); at != std::string::npos; at = body.find(from, at + to.size()))
+            body.replace(at, from.size(), to);
+    };
+    if (msl) {
+        swap("SAMPLE(color_tex, color_smp, ", "color_tex.sample(color_smp, ");
+        swap("SAMPLE(depth_tex, depth_smp, ", "depth_tex.sample(depth_smp, ");
+        swap("MIX(", "mix(");
+        swap("FRACT(", "fract(");
+        return "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct Effects { float4 size; float4 dof; float4 roll; float4 look; float4 grade[3]; };\n"
+            "struct VOut { float4 position [[position]]; };\n"
+            "vertex VOut vs_main(uint id [[vertex_id]]) {\n"
+            "    VOut out;\n"
+            "    float2 p = float2((id << 1) & 2, id & 2);\n"
+            "    out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+            "    return out;\n}\n"
+            "fragment float4 ps_main(VOut in [[stage_in]], constant Effects &p [[buffer(0)]],\n"
+            "                        texture2d<float> color_tex [[texture(0)]], sampler color_smp [[sampler(0)]],\n"
+            "                        texture2d<float> depth_tex [[texture(1)]], sampler depth_smp [[sampler(1)]]) {\n"
+            "    float4 pos = in.position;\n" + body + "}\n";
+    }
+    swap("SAMPLE(color_tex, color_smp, ", "texture(color_tex, ");
+    swap("SAMPLE(depth_tex, depth_smp, ", "texture(depth_tex, ");
+    swap("MIX(", "mix(");
+    swap("FRACT(", "fract(");
+    swap("float2", "vec2");
+    swap("float3", "vec3");
+    swap("float4", "vec4");
+    return "#version 450\n"
+        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 roll; vec4 look; vec4 grade[3]; } p;\n"
+        "layout(set = 2, binding = 0) uniform sampler2D color_tex;\n"
+        "layout(set = 2, binding = 1) uniform sampler2D depth_tex;\n"
+        "layout(location = 0) out vec4 out_color;\n"
+        "vec4 effects(vec4 pos) {\n" + body + "}\n"
+        "void main() { out_color = effects(gl_FragCoord); }\n";
+}
+
+constexpr char kGlslEffectsVertex[] = R"(#version 450
+void main() {
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+void effectsRelease(RecompD3dPresenter *presenter)
+{
+    auto &e = presenter->effects;
+    if (e.pipeline) SDL_ReleaseGPUGraphicsPipeline(presenter->device, e.pipeline);
+    if (e.vertex) SDL_ReleaseGPUShader(presenter->device, e.vertex);
+    if (e.fragment) SDL_ReleaseGPUShader(presenter->device, e.fragment);
+    if (e.output) SDL_ReleaseGPUTexture(presenter->device, e.output);
+    if (e.depth_resolve && e.depth_resolve != e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.depth_resolve);
+    if (e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.scene_depth);
+    e = {};
+}
+
+// The view-depth target, its single-sample copy and the effects output, at the main size.
+bool effectsCreate(RecompD3dPresenter *presenter)
+{
+    auto &e = presenter->effects;
+    const uint32_t width = mainWidth(presenter), height = mainHeight(presenter);
+    const bool msaa = presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+    info.usage = msaa ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = presenter->msaa_samples;
+    if (SDL_GPUTextureSupportsSampleCount(presenter->device, info.format, info.sample_count))
+        e.scene_depth = SDL_CreateGPUTexture(presenter->device, &info);
+    if (msaa) {
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        e.depth_resolve = SDL_CreateGPUTexture(presenter->device, &info);
+    } else {
+        e.depth_resolve = e.scene_depth;
+    }
+    info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    e.output = SDL_CreateGPUTexture(presenter->device, &info);
+
+    const bool msl = !presenter->use_spirv;
+    SDL_GPUShaderCreateInfo shader{};
+    std::string vs_source = msl ? effectsSource(true) : std::string(kGlslEffectsVertex);
+    std::string fs_source = effectsSource(msl);
+    std::vector<uint32_t> vs_spirv, fs_spirv;
+    if (msl) {
+        shader.code = reinterpret_cast<const Uint8 *>(vs_source.c_str());
+        shader.code_size = vs_source.size();
+        shader.entrypoint = "vs_main";
+        shader.format = SDL_GPU_SHADERFORMAT_MSL;
+    } else {
+        vs_spirv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
+        shader.code = reinterpret_cast<const Uint8 *>(vs_spirv.data());
+        shader.code_size = vs_spirv.size() * sizeof(uint32_t);
+        shader.entrypoint = "main";
+        shader.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    }
+    shader.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    if (shader.code_size) e.vertex = SDL_CreateGPUShader(presenter->device, &shader);
+    if (msl) {
+        shader.code = reinterpret_cast<const Uint8 *>(fs_source.c_str());
+        shader.code_size = fs_source.size();
+        shader.entrypoint = "ps_main";
+    } else {
+        fs_spirv = compileGlslToSpirv(fs_source, SDL_GPU_SHADERSTAGE_FRAGMENT);
+        shader.code = reinterpret_cast<const Uint8 *>(fs_spirv.data());
+        shader.code_size = fs_spirv.size() * sizeof(uint32_t);
+    }
+    shader.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    shader.num_samplers = 2;
+    shader.num_uniform_buffers = 1;
+    if (shader.code_size) e.fragment = SDL_CreateGPUShader(presenter->device, &shader);
+
+    if (e.vertex && e.fragment) {
+        SDL_GPUGraphicsPipelineCreateInfo pinfo{};
+        pinfo.vertex_shader = e.vertex;
+        pinfo.fragment_shader = e.fragment;
+        pinfo.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pinfo.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        pinfo.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        SDL_GPUColorTargetDescription target{};
+        target.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+        pinfo.target_info.color_target_descriptions = &target;
+        pinfo.target_info.num_color_targets = 1;
+        e.pipeline = SDL_CreateGPUGraphicsPipeline(presenter->device, &pinfo);
+    }
+    if (!e.scene_depth || !e.depth_resolve || !e.output || !e.pipeline) {
+        std::fprintf(stderr, "recomp camera effects: setup failed (%s); off\n", SDL_GetError());
+        effectsRelease(presenter);
+        return false;
+    }
+    e.enabled = true;
+    std::fprintf(stderr, "recomp camera effects: ready (view depth %s)\n", msaa ? "resolved from MSAA" : "single sample");
+    return true;
+}
+
+/* Characters are drawn as skinned joints and lit rigid pieces, one per limb.
+   Each candidate's sampled vertices give its middle on screen and its view
+   depth; the one nearest the picture's middle is the subject. */
+void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+{
+    auto &e = presenter->effects;
+    const bool skinned = draw.blend_weight_count != 0u;
+    if (draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
+        (!skinned && (!draw.directional.enabled || !draw.depth.depth_write_enable)) ||
+        draw.vertex_stride < (3u + draw.blend_weight_count) * sizeof(float)) return;
+    // Parts share one vertex buffer, so sample the vertices this draw's indices use.
+    const uint32_t samples = std::min(draw.index_count, 24u);
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    float clip[4] = {}, low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (uint32_t k = 0; k < samples; ++k) {
+        const uint32_t v = indices[k * draw.index_count / samples];
+        if (v >= draw.vertex_count) return;
+        float vertex[6]{};
+        std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride,
+            (3u + draw.blend_weight_count) * sizeof(float));
+        // The same per-bone transforms the vertex shader blends (wvp[0..3]).
+        float remainder = 1.0f;
+        for (uint32_t b = 0; b <= draw.blend_weight_count; ++b) {
+            const float weight = b == draw.blend_weight_count ? remainder : vertex[3 + b];
+            remainder -= weight;
+            const float *m = b == 0 ? draw.transform : draw.blend_transforms[b - 1];
+            for (unsigned c = 0; c < 4; ++c)
+                clip[c] += weight * (vertex[0] * m[c] + vertex[1] * m[4 + c] + vertex[2] * m[8 + c] + m[12 + c]);
+        }
+        if (!skinned) {
+            const float *m = draw.world[0];
+            for (unsigned a = 0; a < 3; ++a) {
+                const float p = vertex[0] * m[a] + vertex[1] * m[4 + a] + vertex[2] * m[8 + a] + m[12 + a];
+                low[a] = std::min(low[a], p);
+                high[a] = std::max(high[a], p);
+            }
+        }
+    }
+    // A rigid piece as small as a limb: posts, rocks and the court are larger.
+    if (!skinned && std::max({high[0] - low[0], high[1] - low[1], high[2] - low[2]}) > 1.2f) return;
+    if (!(clip[3] > 0.05f * samples) || !std::isfinite(clip[3])) return;
+    const float x = clip[0] / clip[3], y = clip[1] / clip[3];
+    const float offset = std::sqrt(x * x + y * y);
+    if (!std::isfinite(offset) || std::fabs(x) > 1.0f || std::fabs(y) > 1.0f) return;
+    if (e.subject_depth > 0.0f && offset >= e.subject_offset) return;
+    e.subject_offset = offset;
+    e.subject_depth = clip[3] / samples;
+}
+
+/* Draws the effects over the finished frame into effects.output; returns the
+   texture the window and screenshots show. */
+SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
+{
+    auto &e = presenter->effects;
+    if (!e.enabled) return presenter->backbuffer_resolve;
+    RecompCameraEffects settings;
+    recomp_camera_effects_take(&settings);
+    const float subject = e.subject_depth;
+    recomp_camera_effects_report_subject(subject);
+    e.subject_depth = e.subject_offset = 0.0f;
+    if (settings.focus == RECOMP_CAMERA_FOCUS_SUBJECT) settings.focus = subject;
+    if (!settings.active) return presenter->backbuffer_resolve;
+    if (e.depth_resolve != e.scene_depth && !e.depth_resolved) {
+        SDL_GPUColorTargetInfo resolve{};
+        resolve.texture = e.scene_depth;
+        resolve.load_op = SDL_GPU_LOADOP_LOAD;
+        resolve.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+        resolve.resolve_texture = e.depth_resolve;
+        if (SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &resolve, 1, nullptr)) SDL_EndGPURenderPass(pass);
+        e.depth_resolved = true;
+    }
+    const float width = float(mainWidth(presenter)), height = float(mainHeight(presenter));
+    EffectsUniforms u{};
+    u.size[0] = width; u.size[1] = height; u.size[2] = 1.0f / width; u.size[3] = 1.0f / height;
+    const float largest = std::max(4.0f, height * 0.016f);
+    u.dof[0] = settings.depth_of_field && e.depth_drawn ? 1.0f : 0.0f;
+    e.depth_drawn = false;
+    // An automatic focus scales the blur as if focused at 2.5 units.
+    u.dof[1] = recomp_camera_effects_blur_scale(&settings, settings.focus > 0.0f ? settings.focus : 2.5f, height);
+    u.dof[2] = settings.focus;
+    u.dof[3] = largest;
+    const float c = std::cos(settings.roll), s = std::sin(settings.roll), aspect = width / height;
+    u.roll[0] = c; u.roll[1] = s;
+    // Zoom so the turned picture still covers the frame.
+    u.roll[2] = std::fabs(c) + std::fabs(s) * std::max(aspect, 1.0f / aspect);
+    u.look[0] = settings.vignette;
+    u.look[1] = settings.grain;
+    u.look[2] = settings.letterbox;
+    u.look[3] = float(++e.frame % 1024u);
+    recomp_camera_effects_filter_matrix(settings.filter, u.grade);
+
+    SDL_GPUColorTargetInfo target{};
+    target.texture = e.output;
+    target.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    target.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &target, 1, nullptr);
+    if (!pass) return presenter->backbuffer_resolve;
+    SDL_BindGPUGraphicsPipeline(pass, e.pipeline);
+    SDL_GPUTextureSamplerBinding samplers[2] = {
+        {presenter->backbuffer_resolve, presenter->filter_sampler}, {e.depth_resolve, presenter->point_sampler}};
+    SDL_BindGPUFragmentSamplers(pass, 0, samplers, 2);
+    SDL_PushGPUFragmentUniformData(cmdbuf, 0, &u, sizeof u);
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+    return e.output;
+}
+
 } // namespace
 
 // Saves the game's frame, without the overlay drawn on the window, and
 // submits the command buffer. The download waits for the GPU, so only a
 // requested screenshot pays for it.
-static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf) {
+static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *frame) {
     const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
     SDL_GPUTransferBuffer *buffer = SDL_CreateGPUTransferBuffer(presenter->device, &info);
@@ -2891,7 +3272,7 @@ static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *
         return;
     }
     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
-    SDL_GPUTextureRegion source{presenter->backbuffer_resolve, 0, 0, 0, 0, 0, w, h, 1};
+    SDL_GPUTextureRegion source{frame, 0, 0, 0, 0, 0, w, h, 1};
     SDL_GPUTextureTransferInfo destination{buffer, 0, w, h};
     SDL_DownloadFromGPUTexture(copy, &source, &destination);
     SDL_EndGPUCopyPass(copy);
@@ -3242,6 +3623,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
     // Before the boot shaders: whether shadows are on decides their sun block.
     if (sunShadowRequested()) sunCreate(p);
+    // Camera effects come with the free camera.
+    if (const char *free_camera = std::getenv("RECOMP_FREE_CAMERA"))
+        if (free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0) effectsCreate(p);
 
     try {
         p->precompile_thread = std::thread(precompileBootShaders, p);
@@ -3337,7 +3721,19 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             depth_info.clear_stencil = static_cast<Uint8>(clear.stencil);
         }
 
-        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
+        // View depth clears with the main depth buffer, to the farthest a half float holds.
+        SDL_GPUColorTargetInfo color_infos[2] = {color_info, {}};
+        const bool view_depth = is_main && presenter->effects.enabled && clear.clear_depth;
+        if (view_depth) {
+            color_infos[1].texture = presenter->effects.scene_depth;
+            color_infos[1].load_op = SDL_GPU_LOADOP_CLEAR;
+            color_infos[1].store_op = SDL_GPU_STOREOP_STORE;
+            color_infos[1].clear_color = {65504.0f, 0.0f, 0.0f, 0.0f};
+            presenter->effects.depth_resolved = false;
+            presenter->effects.depth_drawn = true;
+        }
+        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, color_infos, view_depth ? 2 : 1,
+            use_depth ? &depth_info : nullptr);
         if (pass) SDL_EndGPURenderPass(pass);
         return RECOMP_D3D_PRESENTER_OK;
     }
@@ -3358,6 +3754,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
+        // The window and screenshots show the camera effects; the front buffer copy does not.
+        SDL_GPUTexture *shown = present.hold ? presenter->backbuffer_resolve : effectsRender(presenter, cmdbuf);
         SDL_GPUTexture *swapchain_tex = nullptr;
         Uint32 swap_w = 0, swap_h = 0;
         // A held frame updates the front buffer copy, but the window keeps
@@ -3366,7 +3764,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
-                blit.source.texture = presenter->backbuffer_resolve;
+                blit.source.texture = shown;
                 blit.source.w = mainWidth(presenter);
                 blit.source.h = mainHeight(presenter);
                 blit.destination.texture = swapchain_tex;
@@ -3410,7 +3808,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf);
+        if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
         if (present.hold) return RECOMP_D3D_PRESENTER_OK;
@@ -3555,7 +3953,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         const SDL_GPUTextureFormat depth_fmt = use_depth ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_INVALID;
 
         // A draw whose shader or pipeline failed is skipped, as before.
-        SDL_GPUGraphicsPipeline *pipeline = getOrCreatePipeline(presenter, draw, layout, color_fmt, depth_fmt, pass_samples);
+        SDL_GPUGraphicsPipeline *pipeline = getOrCreatePipeline(presenter, draw, layout, color_fmt, depth_fmt, pass_samples,
+            is_main && presenter->effects.enabled);
         if (!pipeline) {
             vdata.resize(v_offset);
             idata.resize(i_offset);
@@ -3721,6 +4120,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         presenter->segment.draws.push_back(q);
         ++presenter->draw_count;
+        if (is_main && presenter->effects.enabled && !draw.program_count && !layout.pretransformed)
+            effectsObserveDraw(presenter, draw);
         if (presenter->sun.enabled && draw.target.offscreen && sunPalmTexture(draw.target.color))
             if (RenderTargetEntry *rt = findRenderTarget(presenter, draw.target.color)) rt->sun_palm.draw(draw);
         return RECOMP_D3D_PRESENTER_OK;
@@ -3794,6 +4195,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     }
     recomp_overlay_sdl_gpu_shutdown();
     sunRelease(p);
+    effectsRelease(p);
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {

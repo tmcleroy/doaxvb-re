@@ -9,6 +9,12 @@
   well. It uses the same selection, casters, receivers and overlay rules as
   Direct3D 11, but builds the map at present from that frame's casters, so
   shadows trail their casters by one frame. See `docs/sun-shadow.md`.
+- **Camera settings for the free camera.** Tab, or Back on a controller,
+  opens a list while flying: depth of field that focuses on the girl nearest
+  the middle of the picture (or the centre, or a set distance) with a real
+  f-number, field of view, roll, colour filters, vignette, film grain and
+  letterbox bars. The effects show on the window and in screenshots, on
+  macOS and Linux so far. See `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27
 

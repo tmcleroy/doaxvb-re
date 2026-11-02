@@ -30,6 +30,7 @@ you freeze it.
 | Previous / next swimsuit on the chosen character; hold to scroll, and the suit loads when let go | - / = | D-pad down / up |
 | Screenshot (anywhere; the controller while flying) | F12, or Shift+F12 with [texture replacement](texture-replacement.md) on | Back + A |
 | Next character to animate (the camera turns to her; not in the model viewer) | `\` (backslash) | Left stick click |
+| Camera settings: depth of field, field of view, roll, filters (see below) | Tab | Back, pressed and let go on its own |
 
 While the camera flies, a panel at the top left names the chosen character,
 the animation playing on her (the game's own, or the held clip as its place
@@ -309,6 +310,54 @@ PNG itself, uncompressed, so no image library is needed (tested by
 D3D11 path saved 720x480 PNGs of about 1 MB: two while flying, with the panel
 on screen but not in the picture, and one on the title menu with the camera
 off.
+
+## Camera settings
+
+Tab, or Back pressed and let go without another button, opens a list of
+camera settings in the panel while the camera flies. Up and down (arrow keys
+or the d-pad) choose a row and left and right change it; held, they keep
+going. While the list is open the arrows and the d-pad belong to it, and
+the sticks, WASD and the right mouse button still fly.
+
+| Setting | Values |
+|---|---|
+| Depth of field | Off / On |
+| Focus | On her (the character nearest the middle of the picture), Centre of frame, Manual |
+| Focus distance | Shown for "On her"; changing it switches to Manual, 5% a step |
+| Aperture | f/1.4 to f/22 (f/2 at first) |
+| Field of view | 5 to 120 degrees, a degree a step (Z and X still zoom) |
+| Roll | -45 to 45 degrees |
+| Filter | None, Warm, Cool, Vivid, Muted, Black and white, Sepia |
+| Vignette, Film grain | 0 to 100% |
+| Letterbox | Off, 2.39:1, 1.85:1, 16:9, 4:3, 1:1 |
+
+The settings apply only while the camera flies and only to the window and
+screenshots; the game's own copies of its frame stay as it drew them. They
+last until the runner quits. The rows and their steps are
+`recomp-runtime/camera_settings.c`; what the presenter draws is
+`camera_effects.h`.
+
+The blur is a thin lens on a full-frame camera: the field of view gives the
+focal length on a 24 mm tall sensor, a world unit counts as a metre, and the
+circle of confusion is f^2 / (N (s - f)) * |d - s| / d for focus distance s,
+f-number N and depth d, limited to 1.6% of the frame's height. A narrow field
+of view therefore blurs more at the same f-number, as a long lens does.
+
+**macOS and Linux only for now.** The SDL GPU presenter draws the effects in
+one pass at present: with the free camera setting on, every main-target draw
+also writes its view depth (clip w) into a half-float target beside the
+colour (resolved from MSAA when it is on), cleared with the depth buffer and
+written only by draws that write depth. Depth of field gathers along a
+golden-angle spiral, weighting each tap by whether its own blur reaches the
+pixel, and a tap behind the pixel may spread no further than the pixel's own
+blur, so a sharp foreground keeps its edge. A frame whose depth was not
+drawn (a held picture or a scene change) gets no blur. "On her" takes the
+view depth of the character part nearest the middle of the picture: skinned
+draws and lit rigid pieces no larger than 1.2 units (characters are drawn as
+one rigid piece per limb plus skinned joints); with none on screen it
+focuses on the centre. The game's 2D overlay takes the depth beneath it, so
+it blurs with the scene; H hides it. The D3D11 presenter ignores the
+settings so far.
 
 ## Debugging
 

@@ -7,6 +7,7 @@
 #include "viewer_menu_adapter.h"
 #include "overlay_text.h"
 #include "screenshot.h"
+#include "camera_settings.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -57,7 +58,13 @@
    - and = or BACK with the d-pad's down and up put her previous or next
    swimsuit on her (suit_switch_adapter.c). Changing the clip of a frozen
    scene steps it one frame so the new pose shows. Putting the camera away
-   hands the animation back to the game. */
+   hands the animation back to the game.
+
+   Tab, or BACK pressed and let go on its own, opens the camera settings
+   while flying (camera_settings.h): up and down pick a row, left and right
+   change it, and the presenter draws the effects (camera_effects.h) on the
+   window and screenshots. While the settings are open the arrows and the
+   d-pad belong to them. */
 enum {
     BUILD_CAMERA = 0x00023B10u,
     CAMERA_FIRST = 0x0041A800u,
@@ -153,6 +160,13 @@ static struct {
     RecompInputGamepad pad;
     RecompFreeCamera camera;
     uint32_t trace_lines;
+    /* The camera settings list (Tab or BACK alone). */
+    bool settings_open, settings_key_held, back_held, back_combo, settings_ready;
+    int setting_row;
+    HeldRepeat row_repeat, value_repeat;
+    RecompCameraSettings settings;
+    /* How far ahead of the camera the chosen character is; zero for none. */
+    float character_focus;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -242,6 +256,7 @@ static void set_active(bool active)
     if (!active) {
         state.home_saved = false;
         state.picked = false;
+        state.settings_open = false;
         /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
         recomp_suit_switch_forget();
@@ -321,6 +336,57 @@ static void leave_out_keys(RecompInputGamepad *pad)
     }
 }
 
+static bool any_other_button(const RecompInputGamepad *gamepad)
+{
+    if ((gamepad->buttons & (uint16_t)~XBOX_BACK) != 0u) return true;
+    for (unsigned i = 0u; i < sizeof gamepad->analog_buttons; ++i) {
+        if (gamepad->analog_buttons[i] >= ANALOG_PRESSED) return true;
+    }
+    return false;
+}
+
+/* Tab, or BACK let go without another button (BACK with A is a screenshot),
+   opens and closes the settings; while open, up and down pick a row and
+   left and right change it, held to keep going. */
+static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
+{
+    if (!state.settings_ready) {
+        recomp_camera_settings_default(&state.settings);
+        state.settings_ready = true;
+    }
+    bool tab = state.active && recomp_input_host_key(RECOMP_INPUT_HOST_KEY_TAB);
+    if (tab && !state.settings_key_held) state.settings_open = !state.settings_open;
+    state.settings_key_held = tab;
+    bool back = state.active && (gamepad->buttons & XBOX_BACK) != 0u;
+    if (back) {
+        if (!state.back_held) state.back_combo = false;
+        if (any_other_button(gamepad)) state.back_combo = true;
+    } else if (state.back_held && !state.back_combo && state.active) {
+        state.settings_open = !state.settings_open;
+    }
+    state.back_held = back;
+    if (!state.active) state.settings_open = false;
+    if (!state.settings_open) return;
+
+    bool released;
+    bool up = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_UP) || (gamepad->buttons & XBOX_DPAD_UP) != 0u;
+    bool down = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_DOWN) || (gamepad->buttons & XBOX_DPAD_DOWN) != 0u;
+    bool left = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT) || (gamepad->buttons & XBOX_DPAD_LEFT) != 0u;
+    bool right = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT) || (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u;
+    int rows = held_repeat(&state.row_repeat, (int)down - (int)up, now, &released);
+    if (rows != 0) {
+        /* Rows move one at a time however long the key is held. */
+        int row = state.setting_row + (rows > 0 ? 1 : -1);
+        state.setting_row = (row % RECOMP_CAMERA_SETTING_COUNT + RECOMP_CAMERA_SETTING_COUNT) %
+            RECOMP_CAMERA_SETTING_COUNT;
+    }
+    int steps = held_repeat(&state.value_repeat, (int)right - (int)left, now, &released);
+    if (steps != 0) {
+        recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
+            steps, &state.camera.fov, state.character_focus);
+    }
+}
+
 static bool take_sample(const RecompInputGamepad *raw)
 {
     RecompInputGamepad pad = *raw;
@@ -386,14 +452,18 @@ static bool take_sample(const RecompInputGamepad *raw)
         recomp_scene_freeze_step();
     }
 
+    uint64_t now = milliseconds();
+    bool released;
+    take_settings_input(gamepad, now);
+    /* With the settings open the d-pad is theirs. */
+    const uint16_t dpad = state.settings_open ? 0u : gamepad->buttons;
+
     /* A press moves to the next or previous clip; holding keeps moving,
        faster the longer it is held, and the clip plays when let go. */
     bool clip_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
-        (gamepad->buttons & XBOX_DPAD_LEFT) != 0u);
+        (dpad & XBOX_DPAD_LEFT) != 0u);
     bool clip_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
-        (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u);
-    uint64_t now = milliseconds();
-    bool released;
+        (dpad & XBOX_DPAD_RIGHT) != 0u);
     int places = held_repeat(&state.clip_held, (int)clip_next - (int)clip_back, now, &released);
     if (places != 0) recomp_actor_pose_browse(places);
     if (released && recomp_actor_pose_play_browsed() && recomp_scene_freeze_active()) {
@@ -411,9 +481,9 @@ static bool take_sample(const RecompInputGamepad *raw)
 
     /* Swimsuits move the same way and the suit loads when let go. */
     bool suit_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_MINUS) ||
-        (gamepad->buttons & XBOX_DPAD_DOWN) != 0u);
+        (dpad & XBOX_DPAD_DOWN) != 0u);
     bool suit_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_EQUALS) ||
-        (gamepad->buttons & XBOX_DPAD_UP) != 0u);
+        (dpad & XBOX_DPAD_UP) != 0u);
     places = held_repeat(&state.suit_held, (int)suit_next - (int)suit_back, now, &released);
     if (places != 0) {
         RecompActorPoseStatus pose;
@@ -481,10 +551,13 @@ static void read_controls(RecompFreeCameraControls *controls)
         (float)pad->analog_buttons[ANALOG_LTRIG]) / 255.0f +
         key(RECOMP_INPUT_HOST_KEY_E, RECOMP_INPUT_HOST_KEY_Q);
     controls->move[2] = stick(pad->thumb_ly) + key(RECOMP_INPUT_HOST_KEY_W, RECOMP_INPUT_HOST_KEY_S);
+    /* With the settings open the arrows are theirs; the right stick and the
+       mouse still look. */
+    const float arrows = state.settings_open ? 0.0f : 1.0f;
     controls->look[0] = stick(pad->thumb_rx) +
-        key(RECOMP_INPUT_HOST_KEY_RIGHT, RECOMP_INPUT_HOST_KEY_LEFT);
+        arrows * key(RECOMP_INPUT_HOST_KEY_RIGHT, RECOMP_INPUT_HOST_KEY_LEFT);
     controls->look[1] = stick(pad->thumb_ry) +
-        key(RECOMP_INPUT_HOST_KEY_UP, RECOMP_INPUT_HOST_KEY_DOWN);
+        arrows * key(RECOMP_INPUT_HOST_KEY_UP, RECOMP_INPUT_HOST_KEY_DOWN);
     /* The d-pad's up and down change the swimsuit; only keys zoom. */
     controls->zoom = key(RECOMP_INPUT_HOST_KEY_Z, RECOMP_INPUT_HOST_KEY_X);
     /* Dragging with the right mouse button aims; a narrow view aims finer. */
@@ -554,6 +627,13 @@ static void choose_object(void)
     fprintf(stderr, "recomp free camera: object %u (built %02x, draws %u %u %u %u %u)\n", best,
         state.built_before, state.drawn_before[0], state.drawn_before[1], state.drawn_before[2],
         state.drawn_before[3], state.drawn_before[4]);
+}
+
+/* "Focus on her": the presenter finds the character nearest the middle of
+   the picture (camera_effects.h); the list shows her distance. */
+static void update_character_focus(void)
+{
+    state.character_focus = recomp_camera_effects_subject();
 }
 
 static void build_camera(void)
@@ -667,6 +747,7 @@ static void build_camera(void)
         state.aim_pending = false;
         state.frame_pending = false;
     }
+    if (fly && state.started) update_character_focus();
     if (fly && state.started) {
         float flown[3];
         recomp_free_camera_target(&state.camera, flown);
@@ -790,6 +871,20 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         return;
     }
 
+    if (state.settings_open) {
+        recomp_overlay_set_title(text, "CAMERA SETTINGS");
+        for (int row = 0; row < RECOMP_CAMERA_SETTING_COUNT; ++row) {
+            char value[RECOMP_OVERLAY_LINE_SIZE];
+            recomp_camera_settings_describe(&state.settings, (RecompCameraSettingRow)row, state.camera.fov,
+                state.character_focus, value, sizeof value);
+            recomp_overlay_add_line(text, "%s %s", row == state.setting_row ? ">" : " ", value);
+        }
+        recomp_overlay_set_hint(text, state.controller_hints > 0
+            ? "Back close  |  D-pad up/down choose  |  D-pad left/right change  |  sticks still fly"
+            : "Tab close  |  up/down choose  |  left/right change  |  WASD and right-drag still fly");
+        return;
+    }
+
     RecompActorPoseStatus pose;
     char name[48];
     recomp_actor_pose_status(&pose);
@@ -821,18 +916,18 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         recomp_overlay_set_hint(text, viewer
             ? "R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look\n"
-              "D-pad left/right animation  |  D-pad up/down swimsuit"
+              "D-pad left/right animation  |  D-pad up/down swimsuit  |  Back camera settings"
             : "R3 off  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
               "Left stick move  |  LT RT down/up  |  Right stick look  |  L3 next girl\n"
-              "D-pad left/right animation  |  D-pad up/down swimsuit");
+              "D-pad left/right animation  |  D-pad up/down swimsuit  |  Back camera settings");
     } else {
         snprintf(hint, sizeof hint, viewer
             ? "F1 leave  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom\n"
-              "[ ] animation  |  - = swimsuit"
+              "[ ] animation  |  - = swimsuit  |  Tab camera settings"
             : "F1 off  |  P freeze  |  . step  |  H clean view  |  %s screenshot  |  R reset\n"
               "WASD QE move  |  arrows / right-drag look  |  Z X zoom  |  \\ next girl\n"
-              "[ ] animation  |  - = swimsuit", shot);
+              "[ ] animation  |  - = swimsuit  |  Tab camera settings", shot);
         recomp_overlay_set_hint(text, hint);
     }
 }
@@ -843,6 +938,15 @@ void recomp_free_camera_overlay(bool viewer)
     state.viewer = viewer;
     fill_overlay(&text, viewer);
     recomp_overlay_publish(&text);
+    /* The effects show only while flying. */
+    RecompCameraEffects effects;
+    if (!state.settings_ready) {
+        recomp_camera_settings_default(&state.settings);
+        state.settings_ready = true;
+    }
+    recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
+    effects.active = effects.active && state.active && state.started;
+    recomp_camera_effects_publish(&effects);
 }
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)

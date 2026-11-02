@@ -12,7 +12,7 @@ extern "C" {
    draws whatever it holds when the frame is presented. Plain data, with no
    knowledge of how or where it is drawn. */
 enum {
-    RECOMP_OVERLAY_LINES = 8,
+    RECOMP_OVERLAY_LINES = 20,
     RECOMP_OVERLAY_LINE_SIZE = 96,
     RECOMP_OVERLAY_HINT_SIZE = 320,
 };
