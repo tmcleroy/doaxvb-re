@@ -1186,6 +1186,8 @@ void recomp_free_camera_overlay(bool viewer)
     effects.active = effects.active && state.active && state.started;
     effects.recording = state.playing && state.settings.record && state.active;
     step_slow_motion();
+    recomp_actor_pose_set_look(state.active && state.started && state.settings.eye_contact != 0u,
+        state.settings.eye_contact == 2u, state.camera.position);
     if (!(state.active && state.started)) {
         effects.hour = -1.0f;
         effects.light_angle = 0.0f;

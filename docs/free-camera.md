@@ -353,6 +353,7 @@ the sticks, WASD and the right mouse button still fly.
 | Record video | On: playing the path records it to an MP4 |
 | Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
+| Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -419,6 +420,16 @@ and stepping back puts a frame's back. A frozen scene builds no skeletons, so
 they stay; stepping forward goes through the history and then runs the scene
 a frame. Only the characters go back: the ball, the camera and everything
 else stay where the newest frame left them.
+
+Eye contact uses the game's own look-at, which turns a girl's neck and head
+toward the ball (its position at `0x00416630`) by her look weight (the float
+at +0x164 of the character state in EBX when 0x000B01E0 builds her
+skeleton): for each build the camera's position stands in for the ball at
+full weight, and both are put back after. The game limits the turn (60
+degrees each way, 60 down, 10 up; the neck takes 30% and the head 70%). With
+eyes, each eye bone (21 and 17) then turns toward the camera about its own
+centre by up to 23 degrees, taking its +Z as its line of sight; that axis is
+an assumption not yet checked close up.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

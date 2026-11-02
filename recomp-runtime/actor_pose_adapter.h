@@ -46,6 +46,9 @@ bool recomp_actor_pose_facing(float direction[3]);
    last 600 frames while the scene is frozen, putting their bones back;
    returns how many frames back the shown pose is (0 the newest). */
 unsigned recomp_actor_pose_history_step(int step);
+/* Eye contact: while on, every character's head (and with `eyes` her eyes)
+   turns toward `eye`, the camera, as the game turns them toward the ball. */
+void recomp_actor_pose_set_look(bool on, bool eyes, const float eye[3]);
 unsigned recomp_actor_pose_history_back(void);
 /* Plays the next (step > 0) or previous clip on the chosen character and
    holds it. True when a clip was requested. */

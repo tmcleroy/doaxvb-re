@@ -27,7 +27,8 @@
   the girls) and a depth picture. Camera paths play a smooth move through up
   to 16 saved views and can record it to an MP4 with ffmpeg. Slow motion
   (1/2 to 1/8) and stepping the girls' poses back and forth through the last
-  600 frames help find the moment. See
+  600 frames help find the moment, and eye contact turns the girls' heads
+  (and eyes) toward the camera through the game's own look-at. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27

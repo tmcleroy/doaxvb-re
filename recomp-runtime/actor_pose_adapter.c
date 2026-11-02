@@ -389,11 +389,70 @@ static void record_bones(uint32_t actor)
     recomp_guest_load(history.roots[history.newest][actor], root_of(actor), ROOT_STRIDE);
 }
 
+/* Eye contact (recomp_actor_pose_set_look): the game's own look-at turns a
+   character's neck and head toward the ball (0x00416630) by her look weight
+   (+0x164 of the state in EBX at the build). For the build, the camera
+   stands in for the ball at full weight; then each eye bone (21 and 17)
+   turns toward the camera about its own centre, its +Z the line of sight. */
+static struct {
+    bool on, eyes;
+    float eye[3];
+} look;
+
+void recomp_actor_pose_set_look(bool on, bool eyes, const float eye[3])
+{
+    look.on = on;
+    look.eyes = eyes;
+    if (eye != NULL) memcpy(look.eye, eye, sizeof look.eye);
+}
+
+static void aim_eye(uint32_t actor, uint32_t bone)
+{
+    float m[16];
+    recomp_guest_load(m, bone_of(actor, bone), sizeof m);
+    if (m[15] == 0.0f) return;
+    float d[3] = {look.eye[0] - m[12], look.eye[1] - m[13], look.eye[2] - m[14]}, local[3];
+    for (unsigned r = 0u; r < 3u; ++r) local[r] = d[0] * m[r * 4u] + d[1] * m[r * 4u + 1u] + d[2] * m[r * 4u + 2u];
+    const float limit = 0.4f;
+    float yaw = atan2f(local[0], local[2]), pitch = atan2f(-local[1], sqrtf(local[0] * local[0] + local[2] * local[2]));
+    if (!(local[2] > 0.0f)) return; /* behind her: leave the eyes */
+    yaw = yaw > limit ? limit : yaw < -limit ? -limit : yaw;
+    pitch = pitch > limit ? limit : pitch < -limit ? -limit : pitch;
+    /* In the bone's own frame: turn about its Y, then its X; rows are axes. */
+    const float cy = cosf(yaw), sy = sinf(yaw), cp = cosf(pitch), sp = sinf(pitch);
+    const float turn[3][3] = {{cy, 0.0f, -sy}, {sy * sp, cp, cy * sp}, {sy * cp, -sp, cy * cp}};
+    float out[16];
+    memcpy(out, m, sizeof out);
+    for (unsigned r = 0u; r < 3u; ++r)
+        for (unsigned c = 0u; c < 3u; ++c)
+            out[r * 4u + c] = turn[r][0] * m[c] + turn[r][1] * m[4u + c] + turn[r][2] * m[8u + c];
+    recomp_guest_store(bone_of(actor, bone), out, sizeof out);
+}
+
 static void build_skeleton(void)
 {
     const uint32_t actor = recomp_runtime.registers.eax;
+    const uint32_t state_address = recomp_runtime.registers.ebx;
     const bool skipped = actor < ACTOR_COUNT && recomp_scene_freeze_holding();
+    const bool looking = look.on && actor < ACTOR_COUNT && !skipped &&
+        state_address >= 0x1000u && state_address < 0x04000000u - 0x180u;
+    float ball[3], weight = 0.0f;
+    if (looking) {
+        recomp_guest_load(ball, 0x00416630u, sizeof ball);
+        recomp_guest_load(&weight, state_address + 0x164u, sizeof weight);
+        const float full = 1.0f;
+        recomp_guest_store(0x00416630u, look.eye, sizeof look.eye);
+        recomp_guest_store(state_address + 0x164u, &full, sizeof full);
+    }
     build_skeleton_inner();
+    if (looking) {
+        recomp_guest_store(0x00416630u, ball, sizeof ball);
+        recomp_guest_store(state_address + 0x164u, &weight, sizeof weight);
+        if (look.eyes && (pose.hidden & (1u << actor)) == 0u) {
+            aim_eye(actor, 21u);
+            aim_eye(actor, 17u);
+        }
+    }
     if (actor < ACTOR_COUNT && !skipped) record_bones(actor);
 }
 
@@ -430,6 +489,13 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+void recomp_actor_pose_set_look(bool on, bool eyes, const float eye[3])
+{
+    (void)on;
+    (void)eyes;
+    (void)eye;
+}
+
 unsigned recomp_actor_pose_history_step(int step)
 {
     (void)step;
