@@ -333,7 +333,7 @@ the sticks, WASD and the right mouse button still fly.
 | Orbit | Off, Around the focus, Turntable |
 | Ball | Shown / Hidden (in a match) |
 | Other girls | Shown / Hidden |
-| Screenshot size | 1x to 4x the frame |
+| Screenshot size | 1x to 4x the frame, drawn at that size |
 | Time of day | The stage's own, or 06:00 to 22:00 in half hours ([`time-of-day.md`](time-of-day.md)) |
 
 Orbit starts from where the camera is, round the point in focus: the
@@ -347,17 +347,20 @@ hiding the ball uses the model viewer's ball range, so it works only in a
 match.
 
 Roll turns the camera's view about its line of sight after the game builds
-it, so nothing is cropped. A screenshot size above 1x shoots the picture in
-tiles: the screenshot key (or `RECOMP_SCREENSHOT_TRIGGER`; requests pass
-through `recomp_screenshot_set_interceptor`) freezes the scene, hides the
-game's overlay, and narrows the camera's projection to each tile of an n by
-n grid in turn, holding each until the presenter reports it kept
-(`recomp_camera_effects_report_tiles_kept`). The last tile saves one PNG of n
-times the frame's width and height, uncompressed (a 4x shot at 1080p is
-7680x4320, about 130 MB), and the scene goes back to running or frozen as it
-was. Vignette and letterbox follow the whole picture; depth of field keeps
-the focus of the last whole frame and scales its blur with the size; film
-grain stays per pixel. Big screenshots need the SDL GPU presenter.
+it, so nothing is cropped. A screenshot size above 1x draws the next frame
+that many times wider and taller: the screenshot key (or
+`RECOMP_SCREENSHOT_TRIGGER`; requests pass through
+`recomp_screenshot_set_interceptor`) asks the SDL GPU presenter, which at the
+next present makes its main targets (back buffer, depth, copies and the
+effects' targets) that size, single sampled, draws one frame into them with
+every effect worked out over the whole picture, saves it, and puts its own
+size and MSAA back; the front buffer copy is carried across both ways. The
+camera never moves and the picture is drawn once, so nothing looks different
+on screen but a pause of about a second. Depth of field gathers n² times as
+many taps in that frame (up to 1536), so its blur is as smooth as at 1x. Sizes
+shrink to keep the frame within 16384 pixels a side and 40 million in all
+(4x at 1080p, 7680x4320, fits). The PNG is uncompressed, about 130 MB at
+7680x4320. The D3D11 presenter does not draw big screenshots yet.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

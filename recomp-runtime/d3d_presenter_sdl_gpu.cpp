@@ -611,12 +611,16 @@ struct RecompD3dPresenter {
         SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
         SDL_GPUGraphicsPipeline *pipeline = nullptr;
         uint32_t frame = 0;
-        // The focus of the last whole frame, which every tile of a big screenshot keeps.
-        float held_focus = 0.0f;
-        // A big screenshot being put together, tile by tile.
-        std::vector<uint8_t> tiles;
-        unsigned tiles_across = 0, tiles_kept = 0;
     } effects;
+
+    /* A big screenshot (camera_effects.h): the main targets are drawn this
+       many times larger for one frame, then put back. */
+    struct {
+        bool active = false;
+        float scale = 1.0f;
+        SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
+        uint32_t msaa_count = 1u;
+    } big_shot;
 };
 
 inline uint32_t mainHeight(const RecompD3dPresenter *p) {
@@ -2955,7 +2959,7 @@ void sunRenderMap(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
 struct EffectsUniforms {
     float size[4];     // width, height, 1/width, 1/height
     float dof[4];      // on, blur scale (px), focus (world units; 0 = the centre's depth), largest blur (px)
-    float tile[4];     // tiles across, this tile's column and row, -
+    float taps[4];     // gather taps, -
     float look[4];     // vignette, grain, letterbox aspect (0 = none), frame number
     float grade[3][4]; // colour matrix rows
 };
@@ -2966,8 +2970,7 @@ struct EffectsUniforms {
    than the centre does, so a sharp foreground keeps its edge. */
 constexpr char kEffectsBody[] = R"(
     float2 st = pos.xy * p.size.zw;
-    // Bars and vignette follow the whole picture when it is shot in tiles.
-    float2 uv = (st + p.tile.yz) / p.tile.x;
+    float2 uv = st;
     float frame_aspect = p.size.x * p.size.w;
     if (p.look.z > 0.0) {
         if (p.look.z > frame_aspect) {
@@ -2990,10 +2993,11 @@ constexpr char kEffectsBody[] = R"(
         float centre_blur = min(p.dof.y * abs(centre_depth - focus) / max(centre_depth, 0.001), p.dof.w);
         float3 total = rgb;
         float count = 1.0;
-        float step = max(p.dof.w * p.dof.w / 160.0, 0.5);
+        // About as many taps as fit within the largest blur: r^2 grows by 2 steps a tap.
+        float step = max(p.dof.w * p.dof.w / (1.67 * p.taps.x), 0.5);
         float radius = step;
         float angle = 0.0;
-        for (int i = 0; i < 96 && radius < p.dof.w; ++i) {
+        for (int i = 0; i < int(p.taps.x) && radius < p.dof.w; ++i) {
             float2 tap = st + float2(cos(angle), sin(angle)) * p.size.zw * radius;
             float3 tap_rgb = SAMPLE(color_tex, color_smp, tap).rgb;
             float tap_depth = SAMPLE(depth_tex, depth_smp, tap).r;
@@ -3036,7 +3040,7 @@ std::string effectsSource(bool msl)
         swap("MIX(", "mix(");
         swap("FRACT(", "fract(");
         return "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct Effects { float4 size; float4 dof; float4 tile; float4 look; float4 grade[3]; };\n"
+            "struct Effects { float4 size; float4 dof; float4 taps; float4 look; float4 grade[3]; };\n"
             "struct VOut { float4 position [[position]]; };\n"
             "vertex VOut vs_main(uint id [[vertex_id]]) {\n"
             "    VOut out;\n"
@@ -3056,7 +3060,7 @@ std::string effectsSource(bool msl)
     swap("float3", "vec3");
     swap("float4", "vec4");
     return "#version 450\n"
-        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 tile; vec4 look; vec4 grade[3]; } p;\n"
+        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 taps; vec4 look; vec4 grade[3]; } p;\n"
         "layout(set = 2, binding = 0) uniform sampler2D color_tex;\n"
         "layout(set = 2, binding = 1) uniform sampler2D depth_tex;\n"
         "layout(location = 0) out vec4 out_color;\n"
@@ -3071,20 +3075,29 @@ void main() {
 }
 )";
 
+void effectsReleaseTargets(RecompD3dPresenter *presenter);
+
 void effectsRelease(RecompD3dPresenter *presenter)
 {
     auto &e = presenter->effects;
     if (e.pipeline) SDL_ReleaseGPUGraphicsPipeline(presenter->device, e.pipeline);
     if (e.vertex) SDL_ReleaseGPUShader(presenter->device, e.vertex);
     if (e.fragment) SDL_ReleaseGPUShader(presenter->device, e.fragment);
-    if (e.output) SDL_ReleaseGPUTexture(presenter->device, e.output);
-    if (e.depth_resolve && e.depth_resolve != e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.depth_resolve);
-    if (e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.scene_depth);
+    effectsReleaseTargets(presenter);
     e = {};
 }
 
+void effectsReleaseTargets(RecompD3dPresenter *presenter)
+{
+    auto &e = presenter->effects;
+    if (e.output) SDL_ReleaseGPUTexture(presenter->device, e.output);
+    if (e.depth_resolve && e.depth_resolve != e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.depth_resolve);
+    if (e.scene_depth) SDL_ReleaseGPUTexture(presenter->device, e.scene_depth);
+    e.output = e.depth_resolve = e.scene_depth = nullptr;
+}
+
 // The view-depth target, its single-sample copy and the effects output, at the main size.
-bool effectsCreate(RecompD3dPresenter *presenter)
+bool effectsCreateTargets(RecompD3dPresenter *presenter)
 {
     auto &e = presenter->effects;
     const uint32_t width = mainWidth(presenter), height = mainHeight(presenter);
@@ -3111,6 +3124,14 @@ bool effectsCreate(RecompD3dPresenter *presenter)
     info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     e.output = SDL_CreateGPUTexture(presenter->device, &info);
+    return e.scene_depth && e.depth_resolve && e.output;
+}
+
+bool effectsCreate(RecompD3dPresenter *presenter)
+{
+    auto &e = presenter->effects;
+    const bool msaa = presenter->msaa_samples != SDL_GPU_SAMPLECOUNT_1;
+    effectsCreateTargets(presenter);
 
     const bool msl = !presenter->use_spirv;
     SDL_GPUShaderCreateInfo shader{};
@@ -3241,6 +3262,11 @@ void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterD
     e.subject_depth = clip[3] / samples;
 }
 
+float p_big_ratio(const RecompD3dPresenter *presenter)
+{
+    return presenter->big_shot.active && presenter->big_shot.scale > 0.0f ? presenter->scale / presenter->big_shot.scale : 1.0f;
+}
+
 /* Draws the effects over the finished frame into effects.output; returns the
    texture the window and screenshots show. */
 SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
@@ -3265,29 +3291,20 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
         e.depth_resolved = true;
     }
     const float width = float(mainWidth(presenter)), height = float(mainHeight(presenter));
-    const unsigned across = settings.tiles > 1u ? settings.tiles : 1u;
-    // Tiles keep the whole frame's focus: the centre or subject of one tile is not the picture's.
-    float focus = settings.focus;
-    if (across == 1u) {
-        if (focus > 0.0f) e.held_focus = focus;
-        else if (subject > 0.0f) e.held_focus = subject;
-    } else if (!(focus > 0.0f)) {
-        focus = e.held_focus > 0.0f ? e.held_focus : 2.5f;
-    }
-    // A tile's pixels are 1/across of the whole picture's, so blur scales with it.
-    const float picture_height = height * float(across);
+    const float focus = settings.focus;
+    const float picture_height = height;
     EffectsUniforms u{};
     u.size[0] = width; u.size[1] = height; u.size[2] = 1.0f / width; u.size[3] = 1.0f / height;
     const float largest = std::max(4.0f, picture_height * 0.016f);
+    // A big screenshot's frame is n times larger: n^2 times the taps keep its blur as smooth.
+    const float bigger = p_big_ratio(presenter);
+    u.taps[0] = std::min(96.0f * bigger * bigger, 1536.0f);
     u.dof[0] = settings.depth_of_field && e.depth_drawn ? 1.0f : 0.0f;
     e.depth_drawn = false;
     // An automatic focus scales the blur as if focused at 2.5 units.
     u.dof[1] = recomp_camera_effects_blur_scale(&settings, focus > 0.0f ? focus : 2.5f, picture_height);
     u.dof[2] = focus;
     u.dof[3] = largest;
-    u.tile[0] = float(across);
-    u.tile[1] = float(settings.tile % across);
-    u.tile[2] = float(settings.tile / across);
     u.look[0] = settings.vignette;
     u.look[1] = settings.grain;
     u.look[2] = settings.letterbox;
@@ -3308,6 +3325,126 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
     return e.output;
+}
+
+
+/* The main targets at another scale and sample count: the back buffer and
+   its depth, resolve, copies and the effects' targets. The front buffer copy
+   carries over, scaled, since the game may show it again. False leaves
+   everything as it was. */
+bool resizeMain(RecompD3dPresenter *p, float scale, SDL_GPUSampleCount samples)
+{
+    flushSegment(p);
+    const float old_scale = p->scale;
+    p->scale = scale;
+    const uint32_t w = mainWidth(p), h = mainHeight(p);
+    p->scale = old_scale;
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    info.width = w;
+    info.height = h;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = samples;
+    info.usage = samples == SDL_GPU_SAMPLECOUNT_1 ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER
+                                                  : SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    SDL_GPUTexture *color = SDL_CreateGPUTexture(p->device, &info);
+    info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+    info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    SDL_GPUTexture *depth = SDL_CreateGPUTexture(p->device, &info);
+    info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture *resolve = color;
+    if (samples != SDL_GPU_SAMPLECOUNT_1) {
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        resolve = SDL_CreateGPUTexture(p->device, &info);
+    }
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    SDL_GPUTexture *copy = SDL_CreateGPUTexture(p->device, &info);
+    SDL_GPUTexture *front = SDL_CreateGPUTexture(p->device, &info);
+    SDL_GPUTexture *minify = nullptr;
+    if (scale != 1.0f) {
+        info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        for (uint32_t size = std::max(w, h); size > 1u; size >>= 1u) ++info.num_levels;
+        minify = SDL_CreateGPUTexture(p->device, &info);
+    }
+    if (!color || !depth || !resolve || !copy || !front) {
+        for (SDL_GPUTexture *t : {color, depth, copy, front, minify})
+            if (t) SDL_ReleaseGPUTexture(p->device, t);
+        if (resolve && resolve != color) SDL_ReleaseGPUTexture(p->device, resolve);
+        std::fprintf(stderr, "recomp screenshot: no room for a %ux%u frame\n", w, h);
+        return false;
+    }
+    SDL_GPUBlitInfo blit{};
+    blit.source.texture = p->frontbuffer_copy;
+    blit.source.w = mainWidth(p);
+    blit.source.h = mainHeight(p);
+    blit.destination.texture = front;
+    blit.destination.w = w;
+    blit.destination.h = h;
+    blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    blit.filter = SDL_GPU_FILTER_LINEAR;
+    SDL_BlitGPUTexture(getCommandBuffer(p), &blit);
+    SDL_SubmitGPUCommandBuffer(p->current_command_buffer);
+    p->current_command_buffer = nullptr;
+
+    SDL_ReleaseGPUTexture(p->device, p->backbuffer_color);
+    SDL_ReleaseGPUTexture(p->device, p->backbuffer_depth);
+    if (p->backbuffer_resolve != p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_resolve);
+    SDL_ReleaseGPUTexture(p->device, p->backbuffer_copy);
+    SDL_ReleaseGPUTexture(p->device, p->frontbuffer_copy);
+    if (p->backbuffer_minify) SDL_ReleaseGPUTexture(p->device, p->backbuffer_minify);
+    p->backbuffer_color = color;
+    p->backbuffer_depth = depth;
+    p->backbuffer_resolve = resolve;
+    p->backbuffer_copy = copy;
+    p->frontbuffer_copy = front;
+    p->backbuffer_minify = minify;
+    p->scale = scale;
+    p->msaa_samples = samples;
+    p->msaa_count = samples == SDL_GPU_SAMPLECOUNT_8 ? 8u : samples == SDL_GPU_SAMPLECOUNT_4 ? 4u :
+        samples == SDL_GPU_SAMPLECOUNT_2 ? 2u : 1u;
+    p->backbuffer_resolved = false;
+    p->last_pipeline = nullptr;
+    if (p->effects.enabled) {
+        effectsReleaseTargets(p);
+        if (!effectsCreateTargets(p)) {
+            effectsReleaseTargets(p);
+            p->effects.enabled = false;
+        }
+        p->effects.depth_drawn = false;
+    }
+    return true;
+}
+
+/* Once a present: a requested big screenshot makes the next frame `n` times
+   larger, single sampled (its own size smooths its edges), at most 16384
+   pixels a side and 40 million in all; the frame after it goes back. */
+void bigShotStep(RecompD3dPresenter *p)
+{
+    auto &big = p->big_shot;
+    if (big.active) {
+        resizeMain(p, big.scale, big.samples);
+        p->msaa_count = big.msaa_count;
+        big.active = false;
+        return;
+    }
+    unsigned n = recomp_camera_effects_take_big_shot();
+    if (n < 2u || !p->effects.enabled) return;
+    for (; n >= 2u; --n) {
+        const float scale = p->scale * float(n);
+        const double height = double(p->config.height) * scale, width = height * 16.0 / 9.0;
+        if (width <= 16384.0 && height <= 16384.0 && width * height <= 40.0e6) break;
+    }
+    if (n < 2u) return;
+    big.scale = p->scale;
+    big.samples = p->msaa_samples;
+    big.msaa_count = p->msaa_count;
+    if (resizeMain(p, p->scale * float(n), SDL_GPU_SAMPLECOUNT_1)) {
+        big.active = true;
+        std::fprintf(stderr, "recomp screenshot: next frame at %ux%u\n", mainWidth(p), mainHeight(p));
+    }
 }
 
 } // namespace
@@ -3338,63 +3475,6 @@ static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *
         }
     }
     SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
-}
-
-/* Keeps one tile of a big screenshot (camera_effects.h) and saves the whole
-   picture after the last; submits the command buffer, waiting for the GPU as
-   saveScreenshot does. */
-static void captureTile(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *frame,
-                        const RecompCameraEffects &settings)
-{
-    auto &e = presenter->effects;
-    const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
-    const unsigned across = settings.tiles;
-    if (settings.tile == 0u && e.tiles_kept != 0u) e.tiles_across = 0u;
-    if (e.tiles_across != across) {
-        e.tiles.assign(size_t(w) * across * h * across * 4u, 0u);
-        e.tiles_across = across;
-        e.tiles_kept = 0u;
-    }
-    // Each tile once, in order; the free camera waits for the report.
-    if (settings.tile != e.tiles_kept) {
-        SDL_SubmitGPUCommandBuffer(cmdbuf);
-        return;
-    }
-    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
-    SDL_GPUTransferBuffer *buffer = SDL_CreateGPUTransferBuffer(presenter->device, &info);
-    if (buffer == nullptr) {
-        SDL_SubmitGPUCommandBuffer(cmdbuf);
-        return;
-    }
-    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
-    SDL_GPUTextureRegion source{frame, 0, 0, 0, 0, 0, w, h, 1};
-    SDL_GPUTextureTransferInfo destination{buffer, 0, w, h};
-    SDL_DownloadFromGPUTexture(copy, &source, &destination);
-    SDL_EndGPUCopyPass(copy);
-    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
-    if (fence != nullptr) {
-        SDL_WaitForGPUFences(presenter->device, true, &fence, 1);
-        SDL_ReleaseGPUFence(presenter->device, fence);
-        if (const auto *pixels = static_cast<const uint8_t *>(SDL_MapGPUTransferBuffer(presenter->device, buffer, false))) {
-            const size_t stride = size_t(w) * across * 4u;
-            const size_t x = settings.tile % across, y = settings.tile / across;
-            for (uint32_t row = 0; row < h; ++row)
-                std::memcpy(&e.tiles[(y * h + row) * stride + x * w * 4u], pixels + size_t(row) * w * 4u, w * 4u);
-            SDL_UnmapGPUTransferBuffer(presenter->device, buffer);
-            ++e.tiles_kept;
-            recomp_camera_effects_report_tiles_kept(e.tiles_kept);
-        }
-    }
-    SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
-    if (settings.tile + 1u == across * across) {
-        if (e.tiles_kept == across * across)
-            recomp_screenshot_save(e.tiles.data(), w * across, h * across, w * across * 4u);
-        else
-            std::fprintf(stderr, "recomp screenshot: %u of %u tiles kept; not saved\n", e.tiles_kept, across * across);
-        std::vector<uint8_t>().swap(e.tiles);
-        e.tiles_across = 0u;
-        e.tiles_kept = 0u;
-    }
 }
 
 extern "C" {
@@ -3918,13 +3998,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        RecompCameraEffects camera;
-        recomp_camera_effects_take(&camera);
-        if (!present.hold && presenter->effects.enabled && camera.capture && camera.tiles > 1u &&
-            camera.tile < camera.tiles * camera.tiles) captureTile(presenter, cmdbuf, shown, camera);
+        // A big screenshot's frame was drawn at its size: save it whole.
+        if (presenter->big_shot.active) saveScreenshot(presenter, cmdbuf, shown);
         else if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
+        bigShotStep(presenter);
         if (present.hold) return RECOMP_D3D_PRESENTER_OK;
         ++presenter->present_count;
 

@@ -16,7 +16,8 @@
   letterbox bars. The effects show on the window and in screenshots, on
   macOS and Linux so far. The list can also orbit round the girl in focus
   (by hand or as a turntable), hide the ball or the other girls, and take
-  screenshots at up to four times the frame's size, shot in tiles. A Time
+  screenshots at up to four times the frame's size, drawn at that size in
+  one frame. A Time
   of day row relights the girls and the scene's lights, moves the sun the
   shadows follow and tints the baked stage and sky for any hour from 06:00
   to 22:00 (`docs/time-of-day.md`). See

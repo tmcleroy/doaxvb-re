@@ -125,21 +125,22 @@ bool recomp_camera_effects_scene_tint(float tint[3])
     return on;
 }
 
-static unsigned tiles_kept;
+static unsigned big_shot;
 
-void recomp_camera_effects_report_tiles_kept(unsigned kept)
+void recomp_camera_effects_request_big_shot(unsigned scale)
 {
     lock();
-    tiles_kept = kept;
+    big_shot = scale;
     unlock();
 }
 
-unsigned recomp_camera_effects_tiles_kept(void)
+unsigned recomp_camera_effects_take_big_shot(void)
 {
     lock();
-    unsigned kept = tiles_kept;
+    const unsigned scale = big_shot;
+    big_shot = 0u;
     unlock();
-    return kept;
+    return scale;
 }
 
 float recomp_camera_effects_subject(void)

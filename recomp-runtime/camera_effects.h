@@ -46,11 +46,6 @@ typedef struct RecompCameraEffects {
     float vignette, grain;
     /* Width over height of the picture between black bars; zero for none. */
     float letterbox;
-    /* A big screenshot in tiles: the frame shows tile `tile` (row by row)
-       of a `tiles` x `tiles` grid, and `capture` asks the presenter to keep
-       it; the last tile saves the whole picture. One tile is a plain frame. */
-    unsigned tiles, tile;
-    bool capture;
     /* Time of day in hours (time_of_day.h), or below zero for the stage's
        own; the scene lights take it while the camera flies. */
     float hour;
@@ -72,15 +67,15 @@ void recomp_camera_effects_take(RecompCameraEffects *effects);
    the last frame was (zero for none), for the free camera to show. */
 void recomp_camera_effects_report_subject(float depth);
 float recomp_camera_effects_subject(void);
-/* The presenter reports how many tiles of the big screenshot under way it
-   has kept, so the free camera moves to the next only after one is kept. */
-void recomp_camera_effects_report_tiles_kept(unsigned kept);
 /* The scene lights report the tint the baked scene takes for the time of day
    (draws the game does not light: the stage and the sky); off, the
    presenter leaves them as drawn. */
 void recomp_camera_effects_report_scene_tint(bool on, const float tint[3]);
 bool recomp_camera_effects_scene_tint(float tint[3]);
-unsigned recomp_camera_effects_tiles_kept(void);
+/* A big screenshot: the presenter draws the next frame `scale` times wider
+   and taller and saves it. Taking the request clears it; 0 for none. */
+void recomp_camera_effects_request_big_shot(unsigned scale);
+unsigned recomp_camera_effects_take_big_shot(void);
 
 #ifdef __cplusplus
 }
