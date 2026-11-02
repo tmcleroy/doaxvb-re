@@ -68,6 +68,30 @@ const char *recomp_camera_effects_filter_name(RecompCameraFilter filter)
     return (unsigned)filter < RECOMP_CAMERA_FILTER_COUNT ? names[filter] : names[0];
 }
 
+void recomp_camera_effects_adjust_matrix(const RecompCameraEffects *effects, float matrix[3][4])
+{
+    static const float luma[3] = {0.2126f, 0.7152f, 0.0722f};
+    const float gain = exp2f(effects->exposure);
+    const float saturation = effects->saturation > 0.0f ? effects->saturation : 1.0f;
+    const float contrast = 1.0f + effects->contrast;
+    float adjust[3][4];
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            const float mixed = (1.0f - saturation) * luma[column] + (row == column ? saturation : 0.0f);
+            adjust[row][column] = contrast * gain * mixed;
+        }
+        adjust[row][3] = 0.5f * (1.0f - contrast);
+    }
+    float out[3][4];
+    for (int row = 0; row < 3; ++row)
+        for (int column = 0; column < 4; ++column) {
+            float sum = column == 3 ? adjust[row][3] : 0.0f;
+            for (int k = 0; k < 3; ++k) sum += adjust[row][k] * matrix[k][column];
+            out[row][column] = sum;
+        }
+    memcpy(matrix, out, sizeof out);
+}
+
 /* The same handover as overlay_text.c: a spin lock held only for the copy. */
 static RecompCameraEffects published;
 #ifdef _WIN32

@@ -5,6 +5,7 @@
 #include "viewer_scene.h"
 #include "d3d_frame_adapter.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,11 +118,24 @@ static float stage_hour(void)
     }
 }
 
+/* Turns a vector about the vertical by `angle` radians. */
+static void turn_about_vertical(float v[3], float angle)
+{
+    const float c = cosf(angle), sn = sinf(angle), x = v[0], z = v[2];
+    v[0] = c * x + sn * z;
+    v[2] = -sn * x + c * z;
+}
+
+/* The free camera's time of day and key light (camera_effects.h) on one
+   light; light 0 comes first each frame. Light 0 also sets the sun the
+   shadows follow; the game's own is put back when neither is set. */
 static void time_of_day_light(uint32_t slot, RecompStageLight *light, float toward[3])
 {
     RecompCameraEffects effects;
     recomp_camera_effects_take(&effects);
-    if (!(effects.hour >= 0.0f)) {
+    const bool timed = effects.hour >= 0.0f;
+    const bool keyed = effects.light_angle != 0.0f || (effects.light_strength > 0.0f && effects.light_strength != 1.0f);
+    if (!timed && !keyed) {
         if (day.on) {
             recomp_guest_store(0x00333870u, day.saved_sun, sizeof day.saved_sun);
             recomp_camera_effects_report_scene_tint(false, NULL);
@@ -134,23 +148,35 @@ static void time_of_day_light(uint32_t slot, RecompStageLight *light, float towa
         day.on = true;
     }
     if (slot == 0u) {
-        recomp_time_of_day_look(stage_hour(), &day.stage);
-        recomp_time_of_day_look(effects.hour, &day.target);
-        float tint[3];
-        recomp_time_of_day_tint(&day.stage, &day.target, tint);
-        recomp_camera_effects_report_scene_tint(true, tint);
+        if (timed) {
+            recomp_time_of_day_look(stage_hour(), &day.stage);
+            recomp_time_of_day_look(effects.hour, &day.target);
+            float tint[3];
+            recomp_time_of_day_tint(&day.stage, &day.target, tint);
+            recomp_camera_effects_report_scene_tint(true, tint);
+        } else {
+            recomp_camera_effects_report_scene_tint(false, NULL);
+        }
     }
-    recomp_time_of_day_relight(&day.stage, &day.target, slot, light);
-    if (slot == 0u && light->kind != 0u) {
-        /* Shadows follow the true sun; the key light stays at least
-           LIGHT_ELEVATION up, or flat ground would go dark at sunset. */
-        float sun[3], aimed[3];
+    if (timed) recomp_time_of_day_relight(&day.stage, &day.target, slot, light);
+    if (slot != 0u || light->kind == 0u) return;
+    /* Shadows follow the true sun; the key light stays at least
+       LIGHT_ELEVATION up, or flat ground would go dark at sunset. */
+    float sun[3], aimed[3];
+    if (timed) {
         recomp_time_of_day_direction(toward, day.target.elevation, sun);
-        recomp_guest_store(0x00333870u, sun, sizeof sun);
         const float lit = day.target.elevation > LIGHT_ELEVATION ? day.target.elevation : LIGHT_ELEVATION;
         recomp_time_of_day_direction(toward, lit, aimed);
-        memcpy(toward, aimed, sizeof aimed);
+    } else {
+        memcpy(sun, day.saved_sun, sizeof sun);
+        memcpy(aimed, toward, sizeof aimed);
     }
+    turn_about_vertical(sun, effects.light_angle);
+    turn_about_vertical(aimed, effects.light_angle);
+    recomp_guest_store(0x00333870u, sun, sizeof sun);
+    memcpy(toward, aimed, sizeof aimed);
+    if (effects.light_strength > 0.0f)
+        for (unsigned c = 0u; c < 3u; ++c) light->diffuse[c] *= effects.light_strength;
 }
 
 /* 0x0017CB50: EDI the game record, [ESP+4] the slot (ESP points at the

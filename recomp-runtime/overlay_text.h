@@ -22,6 +22,12 @@ typedef struct RecompOverlayText {
     char line[RECOMP_OVERLAY_LINES][RECOMP_OVERLAY_LINE_SIZE];
     unsigned count;
     char hint[RECOMP_OVERLAY_HINT_SIZE];
+    /* A composition grid over the picture: 0 none, 1 thirds, 2 golden
+       ratio, 3 centre; inside letterbox bars of `bars` width over height
+       when it is not zero. The presenter sets `picture`, the picture's width
+       over height, since the window may be wider or taller. */
+    unsigned grid;
+    float bars, picture;
 } RecompOverlayText;
 
 /* Empties the overlay; an empty overlay draws nothing. */

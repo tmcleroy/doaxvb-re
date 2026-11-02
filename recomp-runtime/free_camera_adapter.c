@@ -175,6 +175,11 @@ static struct {
     bool orbiting;
     /* Characters the settings hid. */
     uint32_t settings_hidden;
+    /* Camera spots: saved views, and which keys were down last sample. */
+    RecompFreeCamera spots[RECOMP_CAMERA_SPOTS];
+    bool spot_saved[RECOMP_CAMERA_SPOTS];
+    unsigned spot_keys;
+    bool spot_go_held, spot_save_held;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -355,6 +360,20 @@ static bool any_other_button(const RecompInputGamepad *gamepad)
     return false;
 }
 
+/* Saves the flown view in a spot, or goes to a saved one (for this run). */
+static void use_spot(unsigned spot, bool save)
+{
+    if (spot >= RECOMP_CAMERA_SPOTS || !state.started) return;
+    if (save) {
+        state.spots[spot] = state.camera;
+        state.spot_saved[spot] = true;
+        fprintf(stderr, "recomp free camera: saved spot %u\n", spot + 1u);
+    } else if (state.spot_saved[spot]) {
+        state.camera = state.spots[spot];
+        state.orbiting = false;
+    }
+}
+
 /* Tab, or BACK let go without another button (BACK with A is a screenshot),
    opens and closes the settings; while open, up and down pick a row and
    left and right change it, held to keep going. */
@@ -395,6 +414,28 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
     }
+    /* On the Camera spot row, A goes to the spot and X saves the view there. */
+    const bool spot_row = state.setting_row == RECOMP_CAMERA_SETTING_SPOT;
+    const bool go = spot_row && gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
+    const bool save = spot_row && gamepad->analog_buttons[ANALOG_X] >= ANALOG_PRESSED;
+    if (go && !state.spot_go_held) use_spot(state.settings.spot, false);
+    if (save && !state.spot_save_held) use_spot(state.settings.spot, true);
+    state.spot_go_held = go;
+    state.spot_save_held = save;
+}
+
+/* Keys 1 to 4 go to a camera spot, with Shift they save the view there. */
+static void take_spot_keys(void)
+{
+    static const RecompInputHostKey keys[RECOMP_CAMERA_SPOTS] = {RECOMP_INPUT_HOST_KEY_1,
+        RECOMP_INPUT_HOST_KEY_2, RECOMP_INPUT_HOST_KEY_3, RECOMP_INPUT_HOST_KEY_4};
+    unsigned down = 0u;
+    for (unsigned i = 0u; i < RECOMP_CAMERA_SPOTS; ++i) {
+        if (!state.active || !recomp_input_host_key(keys[i])) continue;
+        down |= 1u << i;
+        if ((state.spot_keys & (1u << i)) == 0u) use_spot(i, recomp_input_host_key(RECOMP_INPUT_HOST_KEY_SHIFT));
+    }
+    state.spot_keys = down;
 }
 
 /* Every screenshot request (keys, controller, trigger file) comes here
@@ -475,6 +516,7 @@ static bool take_sample(const RecompInputGamepad *raw)
     uint64_t now = milliseconds();
     bool released;
     take_settings_input(gamepad, now);
+    take_spot_keys();
     /* With the settings open the d-pad is theirs. */
     const uint16_t dpad = state.settings_open ? 0u : gamepad->buttons;
 
@@ -703,7 +745,9 @@ static void build_camera(void)
     if (known) state.built |= 1u << slot;
     recomp_suit_switch_camera_build();
     if (state.active) {
-        bool cycle = analog(&state.pad, ANALOG_X) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_C);
+        /* With the settings open, X saves a camera spot instead. */
+        bool cycle = !state.settings_open &&
+            (analog(&state.pad, ANALOG_X) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_C));
         if (cycle && !state.cycle_held) {
             for (uint32_t step = 1u; step <= CAMERA_COUNT; ++step) {
                 uint32_t next = (state.slot + step) % CAMERA_COUNT;
@@ -934,7 +978,12 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
 
     if (state.settings_open) {
         recomp_overlay_set_title(text, "CAMERA SETTINGS");
-        for (int row = 0; row < RECOMP_CAMERA_SETTING_COUNT; ++row) {
+        /* A window of rows round the chosen one when they do not all fit. */
+        enum { SHOWN = 16 };
+        int first = state.setting_row - SHOWN / 2;
+        if (first > RECOMP_CAMERA_SETTING_COUNT - SHOWN) first = RECOMP_CAMERA_SETTING_COUNT - SHOWN;
+        if (first < 0) first = 0;
+        for (int row = first; row < RECOMP_CAMERA_SETTING_COUNT && row < first + SHOWN; ++row) {
             char value[RECOMP_OVERLAY_LINE_SIZE];
             recomp_camera_settings_describe(&state.settings, (RecompCameraSettingRow)row, state.camera.fov,
                 state.character_focus, value, sizeof value);
@@ -1050,6 +1099,13 @@ void recomp_free_camera_overlay(bool viewer)
     RecompOverlayText text;
     state.viewer = viewer;
     fill_overlay(&text, viewer);
+    /* The composition grid shows while flying, clean view or not. */
+    if (state.active && state.settings_ready && state.settings.grid != 0u) {
+        RecompCameraEffects framing;
+        recomp_camera_settings_effects(&state.settings, state.camera.fov, 0.0f, &framing);
+        text.grid = state.settings.grid;
+        text.bars = framing.letterbox;
+    }
     recomp_overlay_publish(&text);
     /* The effects show only while flying. */
     RecompCameraEffects effects;
@@ -1059,7 +1115,11 @@ void recomp_free_camera_overlay(bool viewer)
     }
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
-    if (!(state.active && state.started)) effects.hour = -1.0f;
+    if (!(state.active && state.started)) {
+        effects.hour = -1.0f;
+        effects.light_angle = 0.0f;
+        effects.light_strength = 1.0f;
+    }
     recomp_camera_effects_publish(&effects);
     apply_hiding();
 }

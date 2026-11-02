@@ -47,7 +47,8 @@ void recomp_overlay_set_hint(RecompOverlayText *text, const char *hint)
 
 bool recomp_overlay_empty(const RecompOverlayText *text)
 {
-    return text == NULL || (text->title[0] == '\0' && text->count == 0u && text->hint[0] == '\0');
+    return text == NULL || (text->title[0] == '\0' && text->count == 0u && text->hint[0] == '\0' &&
+        text->grid == 0u);
 }
 
 static RecompOverlayText published;

@@ -23,6 +23,8 @@ void recomp_camera_settings_default(RecompCameraSettings *settings)
     settings->focus_distance = 2.5f;
     settings->aperture = 1u; /* f/2 */
     settings->shot_size = 1u;
+    settings->light_strength = 10u;
+    settings->saturation = 10u;
 }
 
 static int wrap(int value, int count)
@@ -102,6 +104,31 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
         /* 06:00 to 22:00 in half hours, and the stage's own before them. */
         settings->time_of_day = clamp_index((int)settings->time_of_day + steps, TIME_STEPS + 1u);
         break;
+    case RECOMP_CAMERA_SETTING_LIGHT_ANGLE:
+        settings->light_angle = wrap(settings->light_angle + 180 + 5 * steps, 360) - 180;
+        break;
+    case RECOMP_CAMERA_SETTING_LIGHT_STRENGTH:
+        /* 10% to 300%: zero would read as no setting at all (camera_effects.h). */
+        settings->light_strength = 1u + clamp_index((int)settings->light_strength - 1 + steps, 30u);
+        break;
+    case RECOMP_CAMERA_SETTING_EXPOSURE:
+        settings->exposure = (int)clamp_index(settings->exposure + 8 + steps, 17u) - 8;
+        break;
+    case RECOMP_CAMERA_SETTING_CONTRAST:
+        settings->contrast = 5 * ((int)clamp_index(settings->contrast / 5 + 10 + steps, 21u) - 10);
+        break;
+    case RECOMP_CAMERA_SETTING_SATURATION:
+        settings->saturation = clamp_index((int)settings->saturation + steps, 21u);
+        break;
+    case RECOMP_CAMERA_SETTING_BLOOM:
+        settings->bloom = clamp_index((int)settings->bloom + steps, 11u);
+        break;
+    case RECOMP_CAMERA_SETTING_GRID:
+        settings->grid = (unsigned)wrap((int)settings->grid + steps, RECOMP_CAMERA_GRID_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_SPOT:
+        settings->spot = (unsigned)wrap((int)settings->spot + steps, RECOMP_CAMERA_SPOTS);
+        break;
     default:
         break;
     }
@@ -161,6 +188,32 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_SHOT_SIZE:
         snprintf(text, size, "Screenshot size: %ux", settings->shot_size);
         break;
+    case RECOMP_CAMERA_SETTING_LIGHT_ANGLE:
+        snprintf(text, size, "Key light angle: %+d deg", settings->light_angle);
+        break;
+    case RECOMP_CAMERA_SETTING_LIGHT_STRENGTH:
+        snprintf(text, size, "Key light strength: %u%%", settings->light_strength * 10u);
+        break;
+    case RECOMP_CAMERA_SETTING_EXPOSURE:
+        snprintf(text, size, "Exposure: %+.2f", (double)settings->exposure / 4.0);
+        break;
+    case RECOMP_CAMERA_SETTING_CONTRAST:
+        snprintf(text, size, "Contrast: %+d%%", settings->contrast);
+        break;
+    case RECOMP_CAMERA_SETTING_SATURATION:
+        snprintf(text, size, "Saturation: %u%%", settings->saturation * 10u);
+        break;
+    case RECOMP_CAMERA_SETTING_BLOOM:
+        snprintf(text, size, "Bloom and glare: %u%%", settings->bloom * 10u);
+        break;
+    case RECOMP_CAMERA_SETTING_GRID: {
+        static const char *const names[RECOMP_CAMERA_GRID_COUNT] = {"Off", "Thirds", "Golden ratio", "Centre"};
+        snprintf(text, size, "Grid: %s", names[settings->grid % RECOMP_CAMERA_GRID_COUNT]);
+        break;
+    }
+    case RECOMP_CAMERA_SETTING_SPOT:
+        snprintf(text, size, "Camera spot %u: A go, X save (keys 1-4, Shift saves)", settings->spot + 1u);
+        break;
     case RECOMP_CAMERA_SETTING_TIME_OF_DAY:
         if (settings->time_of_day == 0u) {
             snprintf(text, size, "Time of day: the stage's own");
@@ -191,7 +244,14 @@ void recomp_camera_settings_effects(const RecompCameraSettings *settings, float 
     effects->grain = (float)settings->grain / 10.0f;
     effects->letterbox = LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].aspect;
     effects->hour = settings->time_of_day == 0u ? -1.0f : 5.5f + 0.5f * (float)settings->time_of_day;
+    effects->light_angle = (float)settings->light_angle * PI / 180.0f;
+    effects->light_strength = (float)settings->light_strength / 10.0f;
+    effects->exposure = (float)settings->exposure / 4.0f;
+    effects->contrast = (float)settings->contrast / 100.0f;
+    effects->saturation = (float)settings->saturation / 10.0f;
+    effects->bloom = (float)settings->bloom / 10.0f;
     effects->active = effects->depth_of_field || settings->roll != 0.0f ||
         settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
-        settings->grain != 0u || effects->letterbox > 0.0f;
+        settings->grain != 0u || effects->letterbox > 0.0f || settings->exposure != 0 ||
+        settings->contrast != 0 || settings->saturation != 10u || settings->bloom != 0u;
 }

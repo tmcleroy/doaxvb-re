@@ -29,6 +29,14 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_SHOT_SIZE,
     RECOMP_CAMERA_SETTING_TIME_OF_DAY,
+    RECOMP_CAMERA_SETTING_LIGHT_ANGLE,
+    RECOMP_CAMERA_SETTING_LIGHT_STRENGTH,
+    RECOMP_CAMERA_SETTING_EXPOSURE,
+    RECOMP_CAMERA_SETTING_CONTRAST,
+    RECOMP_CAMERA_SETTING_SATURATION,
+    RECOMP_CAMERA_SETTING_BLOOM,
+    RECOMP_CAMERA_SETTING_GRID,
+    RECOMP_CAMERA_SETTING_SPOT,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -50,6 +58,16 @@ typedef enum RecompCameraOrbit {
     RECOMP_CAMERA_ORBIT_COUNT
 } RecompCameraOrbit;
 
+typedef enum RecompCameraGrid {
+    RECOMP_CAMERA_GRID_OFF,
+    RECOMP_CAMERA_GRID_THIRDS,
+    RECOMP_CAMERA_GRID_GOLDEN,
+    RECOMP_CAMERA_GRID_CENTRE,
+    RECOMP_CAMERA_GRID_COUNT
+} RecompCameraGrid;
+
+enum { RECOMP_CAMERA_SPOTS = 4 };
+
 typedef struct RecompCameraSettings {
     bool depth_of_field;
     RecompCameraFocus focus;
@@ -66,6 +84,14 @@ typedef struct RecompCameraSettings {
     bool hide_others;     /* every character but the chosen one */
     unsigned shot_size;   /* screenshots at 1 to 4 times the frame, in tiles */
     unsigned time_of_day; /* 0 the stage's own, else half hours from 05:30 (1 is 06:00) */
+    int light_angle;      /* degrees the key light turns about the vertical */
+    unsigned light_strength; /* tenths of the key light's own strength (10 is its own) */
+    int exposure;         /* quarter stops */
+    int contrast;         /* percent added */
+    unsigned saturation;  /* tenths (10 is the picture's own) */
+    unsigned bloom;       /* tenths */
+    unsigned grid;        /* RecompCameraGrid */
+    unsigned spot;        /* the camera spot the Camera spot row points at, 0 to 3 */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);

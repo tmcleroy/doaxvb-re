@@ -601,6 +601,9 @@ struct RecompD3dPresenter {
         // The character part nearest the middle of this frame: its distance
         // off-centre (in NDC) and its view depth, for "focus on her".
         float subject_offset = 0.0f, subject_depth = 0.0f;
+        // The sun's direction and the scene camera, from a lit scenery draw, for glare.
+        bool sun_seen = false;
+        float sun_dir[3] = {}, sun_camera[16] = {};
         // Time of day's tint for the baked scene, taken at each present for the next frame.
         bool tint = false;
         float tint_rgb[3] = {1.0f, 1.0f, 1.0f};
@@ -2962,6 +2965,8 @@ struct EffectsUniforms {
     float taps[4];     // gather taps, -
     float look[4];     // vignette, grain, letterbox aspect (0 = none), frame number
     float grade[3][4]; // colour matrix rows
+    float bloom[4];    // amount, reach (px), brightness it starts at, -
+    float sun[4];      // sun's place on screen (uv), glare strength, -
 };
 
 /* Depth of field gathers along a golden-angle spiral out to the largest blur
@@ -3011,6 +3016,36 @@ constexpr char kEffectsBody[] = R"(
         }
         rgb = total / count;
     }
+    // Bloom: the bright parts of the picture around the pixel, nearer ones more.
+    if (p.bloom.x > 0.0) {
+        float3 glow = float3(0.0);
+        float weight = 0.0;
+        for (int i = 0; i < 24; ++i) {
+            float r = p.bloom.y * sqrt((float(i) + 0.5) / 24.0);
+            float a = float(i) * 2.39996323;
+            float3 c = SAMPLE(color_tex, color_smp, st + float2(cos(a), sin(a)) * r * p.size.zw).rgb;
+            float w = 1.0 - float(i) / 24.0;
+            glow += c * smoothstep(p.bloom.z, 1.0, max(max(c.r, c.g), c.b)) * w;
+            weight += w;
+        }
+        // Screen blend: the glow lifts toward white without clipping what is already bright.
+        float3 lift = clamp(p.bloom.x * 1.5 * glow / weight, 0.0, 1.0);
+        rgb = 1.0 - (1.0 - rgb) * (1.0 - lift);
+    }
+    // Sun glare: a glow round the sun, when nothing near covers it, and ghosts
+    // along the line from it through the middle of the picture.
+    if (p.sun.z > 0.0 && SAMPLE(depth_tex, depth_smp, p.sun.xy).r > 500.0) {
+        float2 d = (st - p.sun.xy) * float2(frame_aspect, 1.0);
+        float3 flare = float3(1.0, 0.85, 0.6) * (exp(-length(d) * 6.0) * 0.5 + exp(-length(d) * 30.0) * 0.8);
+        float2 axis = float2(0.5) - p.sun.xy;
+        for (int g = 1; g <= 4; ++g) {
+            float2 at = p.sun.xy + axis * (0.6 * float(g));
+            float gd = length((st - at) * float2(frame_aspect, 1.0));
+            float size = 0.02 + 0.015 * float(g);
+            flare += float3(0.5, 0.6, 1.0) * 0.12 * (1.0 - smoothstep(size * 0.6, size, gd)) / float(g);
+        }
+        rgb += p.sun.z * flare;
+    }
     rgb = float3(dot(p.grade[0].xyz, rgb) + p.grade[0].w, dot(p.grade[1].xyz, rgb) + p.grade[1].w,
                  dot(p.grade[2].xyz, rgb) + p.grade[2].w);
     if (p.look.x > 0.0) {
@@ -3040,7 +3075,7 @@ std::string effectsSource(bool msl)
         swap("MIX(", "mix(");
         swap("FRACT(", "fract(");
         return "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct Effects { float4 size; float4 dof; float4 taps; float4 look; float4 grade[3]; };\n"
+            "struct Effects { float4 size; float4 dof; float4 taps; float4 look; float4 grade[3]; float4 bloom; float4 sun; };\n"
             "struct VOut { float4 position [[position]]; };\n"
             "vertex VOut vs_main(uint id [[vertex_id]]) {\n"
             "    VOut out;\n"
@@ -3060,7 +3095,7 @@ std::string effectsSource(bool msl)
     swap("float3", "vec3");
     swap("float4", "vec4");
     return "#version 450\n"
-        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 taps; vec4 look; vec4 grade[3]; } p;\n"
+        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 taps; vec4 look; vec4 grade[3]; vec4 bloom; vec4 sun; } p;\n"
         "layout(set = 2, binding = 0) uniform sampler2D color_tex;\n"
         "layout(set = 2, binding = 1) uniform sampler2D depth_tex;\n"
         "layout(location = 0) out vec4 out_color;\n"
@@ -3219,6 +3254,11 @@ bool effectsCharacterPiece(const RecompD3dPresenterDrawCommand &draw)
 void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     auto &e = presenter->effects;
+    if (!e.sun_seen && draw.sun[3] == 1.0f && draw.directional.enabled && !draw.blend_weight_count) {
+        e.sun_seen = true;
+        std::memcpy(e.sun_dir, draw.sun, sizeof e.sun_dir);
+        std::memcpy(e.sun_camera, draw.view_projection, sizeof e.sun_camera);
+    }
     const bool skinned = draw.blend_weight_count != 0u;
     if (draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
         (!skinned && (!draw.directional.enabled || !draw.depth.depth_write_enable)) ||
@@ -3310,6 +3350,27 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     u.look[2] = settings.letterbox;
     u.look[3] = float(++e.frame % 1024u);
     recomp_camera_effects_filter_matrix(settings.filter, u.grade);
+    recomp_camera_effects_adjust_matrix(&settings, u.grade);
+    if (settings.bloom > 0.0f) {
+        u.bloom[0] = settings.bloom;
+        u.bloom[1] = height * 0.03f;
+        u.bloom[2] = 0.88f;
+        // The sun's place on screen: its direction through the scene's camera.
+        if (e.sun_seen) {
+            float clip[4];
+            for (unsigned c = 0; c < 4; ++c)
+                clip[c] = e.sun_dir[0] * e.sun_camera[c] + e.sun_dir[1] * e.sun_camera[4 + c] + e.sun_dir[2] * e.sun_camera[8 + c];
+            if (clip[3] > 1e-4f) {
+                const float x = clip[0] / clip[3] * 0.5f + 0.5f, y = -clip[1] / clip[3] * 0.5f + 0.5f;
+                if (x > 0.0f && x < 1.0f && y > 0.0f && y < 1.0f) {
+                    u.sun[0] = x;
+                    u.sun[1] = y;
+                    u.sun[2] = settings.bloom;
+                }
+            }
+        }
+    }
+    e.sun_seen = false;
 
     SDL_GPUColorTargetInfo target{};
     target.texture = e.output;
@@ -3983,6 +4044,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // buffer.
                 RecompOverlayText overlay;
                 recomp_overlay_take(&overlay);
+                overlay.picture = static_cast<float>(mainWidth(presenter)) / mainHeight(presenter);
                 recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, cmdbuf,
                     swapchain_tex, swap_w, swap_h, &overlay);
             }

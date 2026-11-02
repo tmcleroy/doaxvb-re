@@ -49,6 +49,13 @@ typedef struct RecompCameraEffects {
     /* Time of day in hours (time_of_day.h), or below zero for the stage's
        own; the scene lights take it while the camera flies. */
     float hour;
+    /* The key light (scene light 0): radians turned about the vertical, and
+       a multiple of its own strength. 0 and 1 leave it. */
+    float light_angle, light_strength;
+    /* Stops brighter, contrast added (-0.5 to 0.5), saturation multiple. */
+    float exposure, contrast, saturation;
+    /* Bloom and sun glare, 0 to 1. */
+    float bloom;
 } RecompCameraEffects;
 
 /* Blur, in pixels of a frame `height` pixels tall, of a point `depth` world
@@ -58,6 +65,8 @@ float recomp_camera_effects_blur_scale(const RecompCameraEffects *effects, float
 /* The filter's colour matrix: rgb' = m[0..2]·rgb + m[3], one row per channel. */
 void recomp_camera_effects_filter_matrix(RecompCameraFilter filter, float matrix[3][4]);
 const char *recomp_camera_effects_filter_name(RecompCameraFilter filter);
+/* Applies exposure, then saturation, then contrast after a filter matrix. */
+void recomp_camera_effects_adjust_matrix(const RecompCameraEffects *effects, float matrix[3][4]);
 
 #define RECOMP_CAMERA_FOCUS_SUBJECT (-1.0f)
 

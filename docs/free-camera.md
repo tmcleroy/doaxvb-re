@@ -314,7 +314,10 @@ off.
 ## Camera settings
 
 Tab, or Back pressed and let go without another button, opens a list of
-camera settings in the panel while the camera flies. Up and down (arrow keys
+camera settings in the panel while the camera flies; it scrolls when it is
+longer than the panel. Keys 1 to 4 go to a saved camera spot at any time
+while flying, and Shift with them saves the view there; spots last until the
+runner quits. Up and down (arrow keys
 or the d-pad) choose a row and left and right change it; held, they keep
 going. While the list is open the arrows and the d-pad belong to it, and
 the sticks, WASD and the right mouse button still fly.
@@ -335,6 +338,14 @@ the sticks, WASD and the right mouse button still fly.
 | Other girls | Shown / Hidden |
 | Screenshot size | 1x to 4x the frame, drawn at that size |
 | Time of day | The stage's own, or 06:00 to 22:00 in half hours ([`time-of-day.md`](time-of-day.md)) |
+| Key light angle | -180 to 180 degrees about the vertical; the sun shadows turn with it |
+| Key light strength | 10% to 300% of the stage's own |
+| Exposure | -2 to +2 stops in quarters |
+| Contrast | -50% to +50% |
+| Saturation | 0% to 200% |
+| Bloom and glare | 0% to 100%: a glow round bright parts, and a glow and lens ghosts when the sun is in the picture and not covered |
+| Grid | Off, Thirds, Golden ratio, Centre (on screen only, never in screenshots) |
+| Camera spot | 1 to 4: A goes to the spot, X saves the view there |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -361,6 +372,15 @@ many taps in that frame (up to 1536), so its blur is as smooth as at 1x. Sizes
 shrink to keep the frame within 16384 pixels a side and 40 million in all
 (4x at 1080p, 7680x4320, fits). The PNG is uncompressed, about 130 MB at
 7680x4320. The D3D11 presenter does not draw big screenshots yet.
+
+The key light settings change scene light 0 in the readable light code
+(docs/stage-lights.md): the angle turns its direction and the sun the
+shadows follow about the vertical, the strength scales its colour. Exposure,
+saturation and contrast join the filter's colour matrix. Bloom gathers the
+picture's bright parts around each pixel and lifts the pixel toward them
+(a screen blend, so nothing clips); glare places the sun by projecting its
+direction through the camera of a lit scenery draw, and draws only where the
+view depth there is far, so a palm or a girl in front hides it.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They
