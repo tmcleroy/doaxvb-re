@@ -11,6 +11,7 @@
 
 #if !defined(_WIN32)
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -626,6 +627,17 @@ struct RecompD3dPresenter {
         SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
         uint32_t msaa_count = 1u;
     } big_shot;
+
+    // A video being recorded (recordingFrame).
+    struct {
+        FILE *pipe = nullptr;
+        std::string path;
+        uint32_t width = 0, height = 0;
+        SDL_GPUTransferBuffer *buffers[3] = {};
+        SDL_GPUFence *fences[3] = {};
+        unsigned next = 0, frames = 0;
+        bool failed = false, warned = false;
+    } recording;
 };
 
 inline uint32_t mainHeight(const RecompD3dPresenter *p) {
@@ -3397,6 +3409,95 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
 }
 
 
+
+/* Video while the free camera's path plays with recording on
+   (camera_effects.h): every presented frame, effects included, goes to
+   ffmpeg as raw BGRA at 60 frames a second and becomes an H.264 MP4 beside
+   the screenshots. Frames are downloaded into a ring of three buffers and
+   written two presents later, so the GPU is not waited on each frame. */
+std::string findFfmpeg()
+{
+    if (const char *chosen = std::getenv("RECOMP_FFMPEG"))
+        if (chosen[0] != '\0' && access(chosen, X_OK) == 0) return chosen;
+    for (const char *candidate : {"/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"})
+        if (access(candidate, X_OK) == 0) return candidate;
+    return {};
+}
+
+void recordingWrite(RecompD3dPresenter *p, unsigned slot)
+{
+    auto &r = p->recording;
+    if (!r.fences[slot]) return;
+    SDL_WaitForGPUFences(p->device, true, &r.fences[slot], 1);
+    SDL_ReleaseGPUFence(p->device, r.fences[slot]);
+    r.fences[slot] = nullptr;
+    if (const auto *pixels = static_cast<const uint8_t *>(SDL_MapGPUTransferBuffer(p->device, r.buffers[slot], false))) {
+        if (r.pipe && std::fwrite(pixels, 1, size_t(r.width) * r.height * 4u, r.pipe) != size_t(r.width) * r.height * 4u)
+            r.failed = true;
+        SDL_UnmapGPUTransferBuffer(p->device, r.buffers[slot]);
+        ++r.frames;
+    }
+}
+
+void recordingStop(RecompD3dPresenter *p)
+{
+    auto &r = p->recording;
+    if (!r.pipe && !r.buffers[0]) return;
+    for (unsigned i = 1; i <= 3; ++i) recordingWrite(p, (r.next + i) % 3u);
+    for (auto &buffer : r.buffers)
+        if (buffer) SDL_ReleaseGPUTransferBuffer(p->device, buffer);
+    const int status = r.pipe ? pclose(r.pipe) : -1;
+    std::fprintf(stderr, status == 0 && !r.failed ? "recomp video: saved %s (%u frames)\n"
+                                                  : "recomp video: %s failed after %u frames\n",
+        r.path.c_str(), r.frames);
+    r = {};
+}
+
+bool recordingStart(RecompD3dPresenter *p)
+{
+    auto &r = p->recording;
+    const std::string ffmpeg = findFfmpeg();
+    char path[1200];
+    if (ffmpeg.empty()) {
+        if (!r.warned) std::fprintf(stderr, "recomp video: no ffmpeg (set RECOMP_FFMPEG); not recording\n");
+        r.warned = true;
+        return false;
+    }
+    if (!recomp_screenshot_path(path, sizeof path)) return false;
+    r.path = path;
+    r.path.replace(r.path.size() - 4u, 4u, ".mp4");
+    r.width = mainWidth(p);
+    r.height = mainHeight(p);
+    const std::string command = "'" + ffmpeg + "' -y -loglevel error -f rawvideo -pix_fmt bgra -s " +
+        std::to_string(r.width) + "x" + std::to_string(r.height) + " -r 60 -i - -c:v libx264 -preset veryfast "
+        "-crf 18 -pix_fmt yuv420p '" + r.path + "'";
+    r.pipe = popen(command.c_str(), "w");
+    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, r.width * r.height * 4u, 0};
+    for (auto &buffer : r.buffers) buffer = SDL_CreateGPUTransferBuffer(p->device, &info);
+    if (!r.pipe || !r.buffers[0] || !r.buffers[1] || !r.buffers[2]) {
+        recordingStop(p);
+        return false;
+    }
+    std::fprintf(stderr, "recomp video: recording %ux%u to %s\n", r.width, r.height, r.path.c_str());
+    return true;
+}
+
+/* Downloads the shown frame and submits the command buffer with a fence;
+   writes the frame from two presents ago. */
+void recordingFrame(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *frame)
+{
+    auto &r = p->recording;
+    const unsigned slot = r.next;
+    recordingWrite(p, slot);
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
+    SDL_GPUTextureRegion source{frame, 0, 0, 0, 0, 0, r.width, r.height, 1};
+    SDL_GPUTextureTransferInfo destination{r.buffers[slot], 0, r.width, r.height};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    r.fences[slot] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+    r.next = (slot + 1u) % 3u;
+}
+
 /* The main targets at another scale and sample count: the back buffer and
    its depth, resolve, copies and the effects' targets. The front buffer copy
    carries over, scaled, since the game may show it again. False leaves
@@ -4119,9 +4220,19 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
+        // Recording follows the free camera's request, at one size from start to end.
+        RecompCameraEffects camera_effects;
+        recomp_camera_effects_take(&camera_effects);
+        const bool record = presenter->effects.enabled && camera_effects.recording && !presenter->big_shot.active;
+        if (presenter->recording.pipe &&
+            (!record || presenter->recording.width != mainWidth(presenter) || presenter->recording.height != mainHeight(presenter)))
+            recordingStop(presenter);
+        if (record && !presenter->recording.pipe && !presenter->recording.warned) recordingStart(presenter);
+        if (!record) presenter->recording.warned = false;
         // A big screenshot's frame was drawn at its size: save it whole.
         if (presenter->big_shot.active) saveScreenshot(presenter, cmdbuf, shown);
         else if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
+        else if (presenter->recording.pipe && !present.hold) recordingFrame(presenter, cmdbuf, shown);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
         bigShotStep(presenter);
@@ -4527,6 +4638,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
         p->current_command_buffer = nullptr;
     }
     recomp_overlay_sdl_gpu_shutdown();
+    recordingStop(p);
     sunRelease(p);
     effectsRelease(p);
 

@@ -8,6 +8,7 @@
 #include "overlay_text.h"
 #include "screenshot.h"
 #include "camera_settings.h"
+#include "camera_path.h"
 #include "viewer_menu_adapter.h"
 
 #include <math.h>
@@ -180,6 +181,10 @@ static struct {
     bool spot_saved[RECOMP_CAMERA_SPOTS];
     unsigned spot_keys;
     bool spot_go_held, spot_save_held;
+    /* The camera path and its playback, in frames since it started. */
+    RecompCameraPath path;
+    bool playing;
+    unsigned play_frames;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -270,6 +275,7 @@ static void set_active(bool active)
         state.home_saved = false;
         state.picked = false;
         state.settings_open = false;
+        state.playing = false;
         /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
         recomp_suit_switch_forget();
@@ -410,7 +416,18 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
             RECOMP_CAMERA_SETTING_COUNT;
     }
     int steps = held_repeat(&state.value_repeat, (int)right - (int)left, now, &released);
-    if (steps != 0) {
+    if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_PATH) {
+        if (steps > 0 && state.started) recomp_camera_path_add(&state.path, &state.camera);
+        else if (steps < 0) recomp_camera_path_remove(&state.path);
+    } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_PATH_PLAY) {
+        if (steps > 0 && state.path.count >= 2u) {
+            state.playing = true;
+            state.play_frames = 0u;
+            state.orbiting = false;
+        } else if (steps < 0) {
+            state.playing = false;
+        }
+    } else if (steps != 0) {
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
     }
@@ -807,7 +824,12 @@ static void build_camera(void)
             const double now = seconds_now();
             double seconds = now - state.stepped_seconds;
             if (!(seconds > 0.0) || seconds > 0.1) seconds = FRAME_SECONDS;
-            if (state.settings.orbit != RECOMP_CAMERA_ORBIT_OFF) {
+            if (state.playing) {
+                /* The path plays at 60 frames a second of its length. */
+                const float t = (float)state.play_frames / (60.0f * (float)state.settings.path_seconds);
+                recomp_camera_path_sample(&state.path, t, &state.camera);
+                if (++state.play_frames > 60u * state.settings.path_seconds) state.playing = false;
+            } else if (state.settings.orbit != RECOMP_CAMERA_ORBIT_OFF) {
                 /* Round the point in focus: the character in the middle of
                    the picture, or the camera's target. */
                 if (!state.orbiting) {
@@ -987,6 +1009,12 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
             char value[RECOMP_OVERLAY_LINE_SIZE];
             recomp_camera_settings_describe(&state.settings, (RecompCameraSettingRow)row, state.camera.fov,
                 state.character_focus, value, sizeof value);
+            if (row == RECOMP_CAMERA_SETTING_PATH)
+                snprintf(value, sizeof value, "Camera path: %u views (right adds this view, left removes)", state.path.count);
+            else if (row == RECOMP_CAMERA_SETTING_PATH_PLAY && state.playing)
+                snprintf(value, sizeof value, "Playing %u%%%s (left stops)",
+                    100u * state.play_frames / (60u * state.settings.path_seconds),
+                    state.settings.record ? ", recording" : "");
             recomp_overlay_add_line(text, "%s %s", row == state.setting_row ? ">" : " ", value);
         }
         recomp_overlay_set_hint(text, state.controller_hints > 0
@@ -1115,6 +1143,7 @@ void recomp_free_camera_overlay(bool viewer)
     }
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
+    effects.recording = state.playing && state.settings.record && state.active;
     if (!(state.active && state.started)) {
         effects.hour = -1.0f;
         effects.light_angle = 0.0f;

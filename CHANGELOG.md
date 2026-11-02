@@ -24,7 +24,8 @@
   the key light, sets exposure, contrast and saturation, adds bloom and sun
   glare, shows a composition grid, saves four camera spots (keys 1 to 4,
   Shift saves), and takes screenshots with a transparent background (only
-  the girls) and a depth picture. See
+  the girls) and a depth picture. Camera paths play a smooth move through up
+  to 16 saved views and can record it to an MP4 with ffmpeg. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27

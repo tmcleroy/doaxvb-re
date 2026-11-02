@@ -347,6 +347,10 @@ the sticks, WASD and the right mouse button still fly.
 | Grid | Off, Thirds, Golden ratio, Centre (on screen only, never in screenshots) |
 | Camera spot | 1 to 4: A goes to the spot, X saves the view there |
 | Screenshot background | The scene, or transparent with only the girls kept, plus a depth picture |
+| Camera path | Right adds the flown view as the next of up to 16 keyframes, left removes the last |
+| Path length | 2 to 60 seconds |
+| Play path | Right plays the path from its first view, left stops |
+| Record video | On: playing the path records it to an MP4 |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -391,6 +395,17 @@ writes it as the frame's alpha and the PNG keeps it (RGBA). Beside it,
 `...-depth.png` is the view depth as grey, white near and black far,
 logarithmic out to 100 units. Colours at the edges are still mixed with what
 was behind.
+
+A camera path plays through its keyframes along a Catmull-Rom curve
+(`camera_path.c`): position, heading the short way round, pitch, field of
+view and focus, eased in and out over the whole length, one step a frame at
+60 frames a second. With Record video on, the SDL GPU presenter sends every
+frame shown while it plays (effects included, the panel not) to ffmpeg as raw
+BGRA, which writes an H.264 MP4 beside the screenshots. Frames are downloaded
+into a ring of three buffers and written two presents later, so the GPU is
+not waited on each frame. ffmpeg comes from `RECOMP_FFMPEG`, or Homebrew's or
+the system's; without it the log says so and nothing is recorded. The game
+steps once a frame, so a slow encoder slows the scene but not the video.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

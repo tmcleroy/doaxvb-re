@@ -25,6 +25,7 @@ void recomp_camera_settings_default(RecompCameraSettings *settings)
     settings->shot_size = 1u;
     settings->light_strength = 10u;
     settings->saturation = 10u;
+    settings->path_seconds = 10u;
 }
 
 static int wrap(int value, int count)
@@ -132,6 +133,12 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_BACKGROUND:
         if (steps % 2 != 0) settings->transparent = !settings->transparent;
         break;
+    case RECOMP_CAMERA_SETTING_PATH_LENGTH:
+        settings->path_seconds = 2u + clamp_index((int)settings->path_seconds - 2 + steps, 59u);
+        break;
+    case RECOMP_CAMERA_SETTING_RECORD:
+        if (steps % 2 != 0) settings->record = !settings->record;
+        break;
     default:
         break;
     }
@@ -214,6 +221,18 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         snprintf(text, size, "Grid: %s", names[settings->grid % RECOMP_CAMERA_GRID_COUNT]);
         break;
     }
+    case RECOMP_CAMERA_SETTING_PATH:
+        snprintf(text, size, "Camera path: right adds this view, left removes the last");
+        break;
+    case RECOMP_CAMERA_SETTING_PATH_LENGTH:
+        snprintf(text, size, "Path length: %u s", settings->path_seconds);
+        break;
+    case RECOMP_CAMERA_SETTING_PATH_PLAY:
+        snprintf(text, size, "Play path: right plays, left stops");
+        break;
+    case RECOMP_CAMERA_SETTING_RECORD:
+        snprintf(text, size, "Record video while the path plays: %s", settings->record ? "On" : "Off");
+        break;
     case RECOMP_CAMERA_SETTING_BACKGROUND:
         snprintf(text, size, "Screenshot background: %s",
             settings->transparent ? "Transparent, girls only (+ depth)" : "The scene");

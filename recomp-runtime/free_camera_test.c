@@ -1,4 +1,5 @@
 #include "free_camera.h"
+#include "camera_path.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -117,6 +118,23 @@ int main(void)
     recomp_free_camera_orbit_step(&camera, &orbit, &closer, 0.0f, 0.5f);
     check(orbit.distance < 4.0f && near(camera.focus, orbit.distance), "forward moves in");
     check(!recomp_free_camera_orbit_begin(&camera, 0.0f, &orbit), "no orbit around the eye");
+
+    /* A path through three views, turning the short way round. */
+    RecompCameraPath path = {0};
+    RecompFreeCamera key = camera, sampled;
+    check(!recomp_camera_path_sample(&path, 0.5f, &sampled), "one view is not a path");
+    key.position[0] = 0.0f; key.heading = 3.0f; key.fov = 0.5f;
+    recomp_camera_path_add(&path, &key);
+    key.position[0] = 10.0f; key.heading = -3.0f; key.fov = 1.0f;
+    recomp_camera_path_add(&path, &key);
+    key.position[0] = 20.0f;
+    recomp_camera_path_add(&path, &key);
+    check(recomp_camera_path_sample(&path, 0.0f, &sampled) && near(sampled.position[0], 0.0f), "starts at the first view");
+    check(recomp_camera_path_sample(&path, 1.0f, &sampled) && near(sampled.position[0], 20.0f), "ends at the last");
+    check(recomp_camera_path_sample(&path, 0.5f, &sampled) && near(sampled.position[0], 10.0f), "passes the middle view");
+    recomp_camera_path_sample(&path, 0.25f, &sampled);
+    check(fabsf(sampled.heading) > 2.9f, "turns through pi, not through zero");
+    check(recomp_camera_path_remove(&path) && path.count == 2u, "removes the last view");
 
     if (failures == 0) printf("free camera test passed\n");
     return failures == 0 ? 0 : 1;

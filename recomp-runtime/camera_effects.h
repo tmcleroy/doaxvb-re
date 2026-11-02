@@ -59,6 +59,8 @@ typedef struct RecompCameraEffects {
     /* Screenshots keep only the characters (alpha from the presenter's
        character mask) and save a depth picture beside them. */
     bool transparent;
+    /* Every frame shown goes to a video file while this is set. */
+    bool recording;
 } RecompCameraEffects;
 
 /* Blur, in pixels of a frame `height` pixels tall, of a point `depth` world

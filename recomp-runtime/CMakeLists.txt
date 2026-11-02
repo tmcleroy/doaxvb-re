@@ -718,6 +718,7 @@ if(RECOMP_PROGRAM_DIR)
         cpu_exhibition.c
         title_idle.c
         free_camera.c
+        camera_path.c
         free_camera_adapter.c
         scene_freeze.c
         scene_freeze_adapter.c
@@ -976,7 +977,7 @@ add_executable(recomp_body_morph_test body_morph.c body_morph_test.c)
 add_executable(recomp_animation_palette_test animation_palette.c animation_palette_test.c)
 add_executable(recomp_cpu_exhibition_test cpu_exhibition_test.c)
 add_executable(recomp_title_idle_test title_idle_test.c)
-add_executable(recomp_free_camera_test free_camera.c free_camera_test.c)
+add_executable(recomp_free_camera_test free_camera.c camera_path.c free_camera_test.c)
 add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
 add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
