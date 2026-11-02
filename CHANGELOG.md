@@ -15,7 +15,8 @@
   f-number, field of view, roll, colour filters, vignette, film grain and
   letterbox bars. The effects show on the window and in screenshots, on
   macOS and Linux so far. The list can also orbit round the girl in focus
-  (by hand or as a turntable) and hide the ball or the other girls. See
+  (by hand or as a turntable), hide the ball or the other girls, and take
+  screenshots at up to four times the frame's size, shot in tiles. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27

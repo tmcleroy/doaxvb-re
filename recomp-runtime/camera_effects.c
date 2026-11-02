@@ -105,6 +105,23 @@ void recomp_camera_effects_report_subject(float depth)
     unlock();
 }
 
+static unsigned tiles_kept;
+
+void recomp_camera_effects_report_tiles_kept(unsigned kept)
+{
+    lock();
+    tiles_kept = kept;
+    unlock();
+}
+
+unsigned recomp_camera_effects_tiles_kept(void)
+{
+    lock();
+    unsigned kept = tiles_kept;
+    unlock();
+    return kept;
+}
+
 float recomp_camera_effects_subject(void)
 {
     lock();

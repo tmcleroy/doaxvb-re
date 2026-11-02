@@ -60,8 +60,16 @@ static volatile LONG requested;
 static atomic_bool requested;
 #endif
 
+static bool (*screenshot_interceptor)(void);
+
+void recomp_screenshot_set_interceptor(bool (*interceptor)(void))
+{
+    screenshot_interceptor = interceptor;
+}
+
 void recomp_screenshot_request(void)
 {
+    if (screenshot_interceptor != NULL && screenshot_interceptor()) return;
 #ifdef _WIN32
     InterlockedExchange(&requested, 1);
 #else

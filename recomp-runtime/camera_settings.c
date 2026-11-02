@@ -20,6 +20,7 @@ void recomp_camera_settings_default(RecompCameraSettings *settings)
     settings->focus = RECOMP_CAMERA_FOCUS_CHARACTER;
     settings->focus_distance = 2.5f;
     settings->aperture = 1u; /* f/2 */
+    settings->shot_size = 1u;
 }
 
 static int wrap(int value, int count)
@@ -92,6 +93,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_HIDE_OTHERS:
         if (steps % 2 != 0) settings->hide_others = !settings->hide_others;
         break;
+    case RECOMP_CAMERA_SETTING_SHOT_SIZE:
+        settings->shot_size = 1u + clamp_index((int)settings->shot_size - 1 + steps, 4u);
+        break;
     default:
         break;
     }
@@ -147,6 +151,9 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         break;
     case RECOMP_CAMERA_SETTING_HIDE_OTHERS:
         snprintf(text, size, "Other girls: %s", settings->hide_others ? "Hidden" : "Shown");
+        break;
+    case RECOMP_CAMERA_SETTING_SHOT_SIZE:
+        snprintf(text, size, "Screenshot size: %ux", settings->shot_size);
         break;
     default:
         snprintf(text, size, "?");

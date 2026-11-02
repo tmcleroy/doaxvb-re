@@ -47,6 +47,9 @@ bool recomp_screenshot_path(char *path, size_t size);
 
 /* Saves a frame to a new path and reports where; presenters call it after
    taking a request. */
+/* A handler that may take a request for itself (the free camera's big
+   screenshots): when it returns true the request is not passed on. */
+void recomp_screenshot_set_interceptor(bool (*interceptor)(void));
 void recomp_screenshot_save(const uint8_t *bgra, uint32_t width,
     uint32_t height, uint32_t pitch);
 

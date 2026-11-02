@@ -604,6 +604,11 @@ struct RecompD3dPresenter {
         SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
         SDL_GPUGraphicsPipeline *pipeline = nullptr;
         uint32_t frame = 0;
+        // The focus of the last whole frame, which every tile of a big screenshot keeps.
+        float held_focus = 0.0f;
+        // A big screenshot being put together, tile by tile.
+        std::vector<uint8_t> tiles;
+        unsigned tiles_across = 0, tiles_kept = 0;
     } effects;
 };
 
@@ -2938,7 +2943,7 @@ void sunRenderMap(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf)
 struct EffectsUniforms {
     float size[4];     // width, height, 1/width, 1/height
     float dof[4];      // on, blur scale (px), focus (world units; 0 = the centre's depth), largest blur (px)
-    float roll[4];     // cos, sin, zoom that keeps the corners filled, -
+    float tile[4];     // tiles across, this tile's column and row, -
     float look[4];     // vignette, grain, letterbox aspect (0 = none), frame number
     float grade[3][4]; // colour matrix rows
 };
@@ -2948,7 +2953,9 @@ struct EffectsUniforms {
    own blur reaches the centre, and a tap behind the centre may spread no more
    than the centre does, so a sharp foreground keeps its edge. */
 constexpr char kEffectsBody[] = R"(
-    float2 uv = pos.xy * p.size.zw;
+    float2 st = pos.xy * p.size.zw;
+    // Bars and vignette follow the whole picture when it is shot in tiles.
+    float2 uv = (st + p.tile.yz) / p.tile.x;
     float frame_aspect = p.size.x * p.size.w;
     if (p.look.z > 0.0) {
         if (p.look.z > frame_aspect) {
@@ -2957,10 +2964,6 @@ constexpr char kEffectsBody[] = R"(
             return float4(0.0, 0.0, 0.0, 1.0);
         }
     }
-    float2 centred = (uv - 0.5) * p.size.xy;
-    float2 turned = float2(centred.x * p.roll.x - centred.y * p.roll.y,
-                           centred.x * p.roll.y + centred.y * p.roll.x) / p.roll.z;
-    float2 st = turned * p.size.zw + 0.5;
     float3 rgb = SAMPLE(color_tex, color_smp, st).rgb;
     if (p.dof.x > 0.5) {
         float focus = p.dof.z;
@@ -2998,6 +3001,8 @@ constexpr char kEffectsBody[] = R"(
         float2 v = (uv - 0.5) * float2(frame_aspect, 1.0);
         float reach = length(v) / length(float2(frame_aspect, 1.0) * 0.5);
         rgb *= 1.0 - p.look.x * smoothstep(0.35, 1.05, reach);
+        // Half a step of noise keeps the darkening from banding in a clear sky.
+        rgb += (FRACT(sin(dot(pos.xy, float2(91.7, 37.3))) * 24634.63) - 0.5) / 255.0;
     }
     if (p.look.y > 0.0) {
         float n = FRACT(sin(dot(pos.xy + p.look.w * float2(12.9898, 4.1414), float2(12.9898, 78.233))) * 43758.5453);
@@ -3019,7 +3024,7 @@ std::string effectsSource(bool msl)
         swap("MIX(", "mix(");
         swap("FRACT(", "fract(");
         return "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct Effects { float4 size; float4 dof; float4 roll; float4 look; float4 grade[3]; };\n"
+            "struct Effects { float4 size; float4 dof; float4 tile; float4 look; float4 grade[3]; };\n"
             "struct VOut { float4 position [[position]]; };\n"
             "vertex VOut vs_main(uint id [[vertex_id]]) {\n"
             "    VOut out;\n"
@@ -3039,7 +3044,7 @@ std::string effectsSource(bool msl)
     swap("float3", "vec3");
     swap("float4", "vec4");
     return "#version 450\n"
-        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 roll; vec4 look; vec4 grade[3]; } p;\n"
+        "layout(set = 3, binding = 0, std140) uniform Effects { vec4 size; vec4 dof; vec4 tile; vec4 look; vec4 grade[3]; } p;\n"
         "layout(set = 2, binding = 0) uniform sampler2D color_tex;\n"
         "layout(set = 2, binding = 1) uniform sampler2D depth_tex;\n"
         "layout(location = 0) out vec4 out_color;\n"
@@ -3223,19 +3228,29 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
         e.depth_resolved = true;
     }
     const float width = float(mainWidth(presenter)), height = float(mainHeight(presenter));
+    const unsigned across = settings.tiles > 1u ? settings.tiles : 1u;
+    // Tiles keep the whole frame's focus: the centre or subject of one tile is not the picture's.
+    float focus = settings.focus;
+    if (across == 1u) {
+        if (focus > 0.0f) e.held_focus = focus;
+        else if (subject > 0.0f) e.held_focus = subject;
+    } else if (!(focus > 0.0f)) {
+        focus = e.held_focus > 0.0f ? e.held_focus : 2.5f;
+    }
+    // A tile's pixels are 1/across of the whole picture's, so blur scales with it.
+    const float picture_height = height * float(across);
     EffectsUniforms u{};
     u.size[0] = width; u.size[1] = height; u.size[2] = 1.0f / width; u.size[3] = 1.0f / height;
-    const float largest = std::max(4.0f, height * 0.016f);
+    const float largest = std::max(4.0f, picture_height * 0.016f);
     u.dof[0] = settings.depth_of_field && e.depth_drawn ? 1.0f : 0.0f;
     e.depth_drawn = false;
     // An automatic focus scales the blur as if focused at 2.5 units.
-    u.dof[1] = recomp_camera_effects_blur_scale(&settings, settings.focus > 0.0f ? settings.focus : 2.5f, height);
-    u.dof[2] = settings.focus;
+    u.dof[1] = recomp_camera_effects_blur_scale(&settings, focus > 0.0f ? focus : 2.5f, picture_height);
+    u.dof[2] = focus;
     u.dof[3] = largest;
-    const float c = std::cos(settings.roll), s = std::sin(settings.roll), aspect = width / height;
-    u.roll[0] = c; u.roll[1] = s;
-    // Zoom so the turned picture still covers the frame.
-    u.roll[2] = std::fabs(c) + std::fabs(s) * std::max(aspect, 1.0f / aspect);
+    u.tile[0] = float(across);
+    u.tile[1] = float(settings.tile % across);
+    u.tile[2] = float(settings.tile / across);
     u.look[0] = settings.vignette;
     u.look[1] = settings.grain;
     u.look[2] = settings.letterbox;
@@ -3286,6 +3301,63 @@ static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *
         }
     }
     SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
+}
+
+/* Keeps one tile of a big screenshot (camera_effects.h) and saves the whole
+   picture after the last; submits the command buffer, waiting for the GPU as
+   saveScreenshot does. */
+static void captureTile(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *frame,
+                        const RecompCameraEffects &settings)
+{
+    auto &e = presenter->effects;
+    const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
+    const unsigned across = settings.tiles;
+    if (settings.tile == 0u && e.tiles_kept != 0u) e.tiles_across = 0u;
+    if (e.tiles_across != across) {
+        e.tiles.assign(size_t(w) * across * h * across * 4u, 0u);
+        e.tiles_across = across;
+        e.tiles_kept = 0u;
+    }
+    // Each tile once, in order; the free camera waits for the report.
+    if (settings.tile != e.tiles_kept) {
+        SDL_SubmitGPUCommandBuffer(cmdbuf);
+        return;
+    }
+    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
+    SDL_GPUTransferBuffer *buffer = SDL_CreateGPUTransferBuffer(presenter->device, &info);
+    if (buffer == nullptr) {
+        SDL_SubmitGPUCommandBuffer(cmdbuf);
+        return;
+    }
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmdbuf);
+    SDL_GPUTextureRegion source{frame, 0, 0, 0, 0, 0, w, h, 1};
+    SDL_GPUTextureTransferInfo destination{buffer, 0, w, h};
+    SDL_DownloadFromGPUTexture(copy, &source, &destination);
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+    if (fence != nullptr) {
+        SDL_WaitForGPUFences(presenter->device, true, &fence, 1);
+        SDL_ReleaseGPUFence(presenter->device, fence);
+        if (const auto *pixels = static_cast<const uint8_t *>(SDL_MapGPUTransferBuffer(presenter->device, buffer, false))) {
+            const size_t stride = size_t(w) * across * 4u;
+            const size_t x = settings.tile % across, y = settings.tile / across;
+            for (uint32_t row = 0; row < h; ++row)
+                std::memcpy(&e.tiles[(y * h + row) * stride + x * w * 4u], pixels + size_t(row) * w * 4u, w * 4u);
+            SDL_UnmapGPUTransferBuffer(presenter->device, buffer);
+            ++e.tiles_kept;
+            recomp_camera_effects_report_tiles_kept(e.tiles_kept);
+        }
+    }
+    SDL_ReleaseGPUTransferBuffer(presenter->device, buffer);
+    if (settings.tile + 1u == across * across) {
+        if (e.tiles_kept == across * across)
+            recomp_screenshot_save(e.tiles.data(), w * across, h * across, w * across * 4u);
+        else
+            std::fprintf(stderr, "recomp screenshot: %u of %u tiles kept; not saved\n", e.tiles_kept, across * across);
+        std::vector<uint8_t>().swap(e.tiles);
+        e.tiles_across = 0u;
+        e.tiles_kept = 0u;
+    }
 }
 
 extern "C" {
@@ -3808,7 +3880,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
+        RecompCameraEffects camera;
+        recomp_camera_effects_take(&camera);
+        if (!present.hold && presenter->effects.enabled && camera.capture && camera.tiles > 1u &&
+            camera.tile < camera.tiles * camera.tiles) captureTile(presenter, cmdbuf, shown, camera);
+        else if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
         if (present.hold) return RECOMP_D3D_PRESENTER_OK;

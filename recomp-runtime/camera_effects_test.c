@@ -77,6 +77,8 @@ int main(void)
     check(settings.orbit == RECOMP_CAMERA_ORBIT_TURNTABLE, "orbit wraps to turntable");
     recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_HIDE_OTHERS, 1, &fov, 0.0f);
     check(settings.hide_others && !settings.hide_ball, "hiding toggles one thing");
+    recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_SHOT_SIZE, 9, &fov, 0.0f);
+    check(settings.shot_size == 4u, "screenshots stop at 4x");
     char line[96];
     recomp_camera_settings_describe(&settings, RECOMP_CAMERA_SETTING_APERTURE, fov, 0.0f, line, sizeof line);
     check(strcmp(line, "Aperture: f/1.4") == 0, "rows describe themselves");

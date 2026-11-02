@@ -27,6 +27,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_ORBIT,
     RECOMP_CAMERA_SETTING_HIDE_BALL,
     RECOMP_CAMERA_SETTING_HIDE_OTHERS,
+    RECOMP_CAMERA_SETTING_SHOT_SIZE,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -62,6 +63,7 @@ typedef struct RecompCameraSettings {
     RecompCameraOrbit orbit;
     bool hide_ball;       /* in a match */
     bool hide_others;     /* every character but the chosen one */
+    unsigned shot_size;   /* screenshots at 1 to 4 times the frame, in tiles */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);

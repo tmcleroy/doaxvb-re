@@ -38,13 +38,19 @@ typedef struct RecompCameraEffects {
     /* Vertical field of view in radians; with the aperture it sets the
        blur, as a lens of that angle on a full-frame camera would. */
     float fov;
-    /* Radians, positive turning the picture anticlockwise. */
+    /* Radians, positive turning the picture anticlockwise. The free camera
+       turns its view; presenters ignore it. */
     float roll;
     RecompCameraFilter filter;
     /* 0 to 1. */
     float vignette, grain;
     /* Width over height of the picture between black bars; zero for none. */
     float letterbox;
+    /* A big screenshot in tiles: the frame shows tile `tile` (row by row)
+       of a `tiles` x `tiles` grid, and `capture` asks the presenter to keep
+       it; the last tile saves the whole picture. One tile is a plain frame. */
+    unsigned tiles, tile;
+    bool capture;
 } RecompCameraEffects;
 
 /* Blur, in pixels of a frame `height` pixels tall, of a point `depth` world
@@ -63,6 +69,10 @@ void recomp_camera_effects_take(RecompCameraEffects *effects);
    the last frame was (zero for none), for the free camera to show. */
 void recomp_camera_effects_report_subject(float depth);
 float recomp_camera_effects_subject(void);
+/* The presenter reports how many tiles of the big screenshot under way it
+   has kept, so the free camera moves to the next only after one is kept. */
+void recomp_camera_effects_report_tiles_kept(unsigned kept);
+unsigned recomp_camera_effects_tiles_kept(void);
 
 #ifdef __cplusplus
 }

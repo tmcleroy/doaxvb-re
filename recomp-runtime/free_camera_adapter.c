@@ -175,6 +175,12 @@ static struct {
     bool orbiting;
     /* Characters the settings hid. */
     uint32_t settings_hidden;
+    /* A big screenshot in tiles (camera settings): the grid, the tile shown,
+       frames it has been shown, and what to put back afterwards. */
+    struct {
+        bool running, was_frozen, overlay_was_hidden;
+        unsigned across, tile, held;
+    } big;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -276,6 +282,7 @@ static void set_active(bool active)
 }
 
 static void sample_while_frozen(uint32_t frame);
+static bool intercept_screenshot(void);
 static void frame_started(void);
 static void draw_viewed(const float view[16]);
 
@@ -288,6 +295,7 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
     recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
     recomp_d3d_draw_set_view_observer(draw_viewed);
+    recomp_screenshot_set_interceptor(intercept_screenshot);
 }
 
 /* Handles the toggles in one sample of port 0. True when the sample is the
@@ -392,6 +400,60 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
     if (steps != 0) {
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
+    }
+}
+
+/* A big screenshot freezes the scene and hides the game's overlay, which
+   would repeat in every tile, then shows the tiles one by one. */
+static void start_big_shot(void)
+{
+    state.big.running = true;
+    state.big.across = state.settings.shot_size;
+    state.big.tile = 0u;
+    state.big.held = 0u;
+    state.big.was_frozen = recomp_scene_freeze_active();
+    state.big.overlay_was_hidden = state.panel_hidden || state.viewer;
+    recomp_camera_effects_report_tiles_kept(0u);
+    recomp_scene_freeze_set(true);
+    recomp_scene_freeze_set_overlay_hidden(true);
+    fprintf(stderr, "recomp free camera: %ux screenshot in %u tiles\n", state.big.across,
+        state.big.across * state.big.across);
+}
+
+/* Every screenshot request (keys, controller, trigger file) comes here
+   first: while flying with a size above 1x it becomes a big screenshot. */
+static bool intercept_screenshot(void)
+{
+    if (!state.active || !state.started || !state.settings_ready || state.settings.shot_size < 2u) return false;
+    if (!state.big.running) start_big_shot();
+    return true;
+}
+
+static void finish_big_shot(void)
+{
+    state.big.running = false;
+    recomp_scene_freeze_set(state.big.was_frozen);
+    recomp_scene_freeze_set_overlay_hidden(state.big.overlay_was_hidden);
+}
+
+/* Once a frame: the next tile once the presenter kept this one. A tile the
+   presenter never keeps (a held scene) gives up after a few seconds. */
+static void step_big_shot(void)
+{
+    if (!state.big.running) return;
+    if (!state.active) {
+        finish_big_shot();
+        return;
+    }
+    ++state.big.held;
+    const unsigned kept = recomp_camera_effects_tiles_kept();
+    if (kept > state.big.tile) {
+        state.big.tile = kept;
+        state.big.held = 0u;
+        if (state.big.tile >= state.big.across * state.big.across) finish_big_shot();
+    } else if (state.big.held > 300u) {
+        fprintf(stderr, "recomp free camera: screenshot tile %u not kept; stopped\n", state.big.tile);
+        finish_big_shot();
     }
 }
 
@@ -644,6 +706,46 @@ static void update_character_focus(void)
     state.character_focus = recomp_camera_effects_subject();
 }
 
+/* Row-vector product a * b. */
+static void multiply(const float a[16], const float b[16], float out[16])
+{
+    for (unsigned r = 0u; r < 4u; ++r)
+        for (unsigned c = 0u; c < 4u; ++c) {
+            float sum = 0.0f;
+            for (unsigned k = 0u; k < 4u; ++k) sum += a[r * 4u + k] * b[k * 4u + c];
+            out[r * 4u + c] = sum;
+        }
+}
+
+/* After the game builds the flown object: the settings' roll turns its view
+   about the line of sight, and a big screenshot narrows its projection to
+   the tile being shot. The game culls by the eye and target, which a roll or
+   a tile only narrows. */
+static void turn_and_tile(uint32_t object)
+{
+    const float roll = state.settings_ready ? state.settings.roll * 3.14159265f / 180.0f : 0.0f;
+    if (roll != 0.0f) {
+        const float c = cosf(roll), s = sinf(roll);
+        const float turn[16] = {c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        float view[16], turned[16];
+        recomp_guest_load(view, object + CAMERA_VIEW, sizeof view);
+        multiply(view, turn, turned);
+        recomp_guest_store(object + CAMERA_VIEW, turned, sizeof turned);
+    }
+    if (state.big.running && state.big.across > 1u) {
+        /* Tile (x, y), counted from the top left, fills the screen: clip x
+           becomes n x - n cx w for the tile's centre cx in device space. */
+        const float n = (float)state.big.across;
+        const float x = (float)(state.big.tile % state.big.across);
+        const float y = (float)(state.big.tile / state.big.across);
+        const float tile[16] = {n, 0, 0, 0, 0, n, 0, 0, 0, 0, 1, 0, n - 2.0f * x - 1.0f, 2.0f * y + 1.0f - n, 0, 1};
+        float projection[16], narrowed[16];
+        recomp_guest_load(projection, object + CAMERA_PROJECTION, sizeof projection);
+        multiply(projection, tile, narrowed);
+        recomp_guest_store(object + CAMERA_PROJECTION, narrowed, sizeof narrowed);
+    }
+}
+
 static void build_camera(void)
 {
     const uint32_t object = recomp_runtime.registers.eax;
@@ -782,6 +884,7 @@ static void build_camera(void)
     RecompFunction observed = recomp_animation_probe_lookup_manual(BUILD_CAMERA);
     if (observed != NULL) observed();
     else sub_00023B10();
+    if (fly && state.started) turn_and_tile(object);
 
 }
 
@@ -1020,6 +1123,13 @@ void recomp_free_camera_overlay(bool viewer)
     }
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
+    step_big_shot();
+    if (state.big.running) {
+        effects.tiles = state.big.across;
+        effects.tile = state.big.tile;
+        /* The first frames after a change may still show the last tile. */
+        effects.capture = state.big.held >= 2u;
+    }
     recomp_camera_effects_publish(&effects);
     apply_hiding();
 }

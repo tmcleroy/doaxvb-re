@@ -326,13 +326,14 @@ the sticks, WASD and the right mouse button still fly.
 | Focus distance | Shown for "On her"; changing it switches to Manual, 5% a step |
 | Aperture | f/1.4 to f/22 (f/2 at first) |
 | Field of view | 5 to 120 degrees, a degree a step (Z and X still zoom) |
-| Roll | -45 to 45 degrees |
+| Roll | -45 to 45 degrees (turns the camera) |
 | Filter | None, Warm, Cool, Vivid, Muted, Black and white, Sepia |
 | Vignette, Film grain | 0 to 100% |
 | Letterbox | Off, 2.39:1, 1.85:1, 16:9, 4:3, 1:1 |
 | Orbit | Off, Around the focus, Turntable |
 | Ball | Shown / Hidden (in a match) |
 | Other girls | Shown / Hidden |
+| Screenshot size | 1x to 4x the frame |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -343,6 +344,19 @@ turns by itself, once in about 18 seconds (`recomp_free_camera_orbit_step` in
 middle of the view, by her hips, and hides the rest as the model viewer does;
 hiding the ball uses the model viewer's ball range, so it works only in a
 match.
+
+Roll turns the camera's view about its line of sight after the game builds
+it, so nothing is cropped. A screenshot size above 1x shoots the picture in
+tiles: the screenshot key (or `RECOMP_SCREENSHOT_TRIGGER`; requests pass
+through `recomp_screenshot_set_interceptor`) freezes the scene, hides the
+game's overlay, and narrows the camera's projection to each tile of an n by
+n grid in turn, holding each until the presenter reports it kept
+(`recomp_camera_effects_report_tiles_kept`). The last tile saves one PNG of n
+times the frame's width and height, uncompressed (a 4x shot at 1080p is
+7680x4320, about 130 MB), and the scene goes back to running or frozen as it
+was. Vignette and letterbox follow the whole picture; depth of field keeps
+the focus of the last whole frame and scales its blur with the size; film
+grain stays per pixel. Big screenshots need the SDL GPU presenter.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They
