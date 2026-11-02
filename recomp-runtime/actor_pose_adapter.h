@@ -37,6 +37,9 @@ void recomp_actor_pose_choose(uint32_t actor);
 void recomp_actor_pose_set_hidden(uint32_t mask);
 /* Where the chosen character's hips are, for the camera to face. */
 bool recomp_actor_pose_focus(float point[3]);
+/* Where character `actor`'s hips are, without choosing her; false when she
+   is not in the scene or is hidden. */
+bool recomp_actor_pose_hips(uint32_t actor, float point[3]);
 /* The level direction the chosen character's hips face. */
 bool recomp_actor_pose_facing(float direction[3]);
 /* Plays the next (step > 0) or previous clip on the chosen character and

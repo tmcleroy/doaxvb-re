@@ -171,6 +171,13 @@ void recomp_actor_pose_set_hidden(uint32_t mask)
     pose.hidden = mask;
 }
 
+bool recomp_actor_pose_hips(uint32_t actor, float point[3])
+{
+    if (!active(actor) || (pose.hidden & (1u << actor)) != 0u) return false;
+    recomp_guest_load(point, bone_of(actor, 0u) + 12u * sizeof(float), 3u * sizeof(float));
+    return true;
+}
+
 bool recomp_actor_pose_focus(float point[3])
 {
     if (!active(pose.actor)) recomp_actor_pose_next_actor();
@@ -390,6 +397,13 @@ void recomp_actor_pose_frame(void)
 
 bool recomp_actor_pose_focus(float point[3])
 {
+    (void)point;
+    return false;
+}
+
+bool recomp_actor_pose_hips(uint32_t actor, float point[3])
+{
+    (void)actor;
     (void)point;
     return false;
 }

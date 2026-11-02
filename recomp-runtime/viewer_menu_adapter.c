@@ -208,6 +208,15 @@ static void hide_ball(bool hide)
     }
 }
 
+/* The free camera's settings can hide the ball in any match, not only the
+   model viewer's (recomp_viewer_request_ball_hidden). */
+static bool ball_requested, ball_hidden_for_request;
+
+void recomp_viewer_request_ball_hidden(bool hide)
+{
+    ball_requested = hide;
+}
+
 static bool choosing_court(void)
 {
     return session == VIEWER_WAITING && *recomp_memory(SCENE, 1u) == SCENE_MENU &&
@@ -399,6 +408,12 @@ static void viewer_tick(uint32_t frame)
     if (panel) recomp_overlay_publish(&text);
     else recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (session == VIEWER_IDLE) restore_courts();
+    if (session != VIEWER_VIEWING) {
+        const bool hide = ball_requested && recomp_free_camera_active() &&
+            *recomp_memory(SCENE, 1u) == SCENE_MATCH;
+        if (hide != ball_hidden_for_request) hide_ball(hide);
+        ball_hidden_for_request = hide;
+    }
     mask_character_select();
     bool in_match = *recomp_memory(SCENE, 1u) == SCENE_MATCH;
     switch (session) {
@@ -539,5 +554,10 @@ void recomp_viewer_install(void)
 void recomp_viewer_input(RecompInputGamepad *gamepad)
 {
     (void)gamepad;
+}
+
+void recomp_viewer_request_ball_hidden(bool hide)
+{
+    (void)hide;
 }
 #endif

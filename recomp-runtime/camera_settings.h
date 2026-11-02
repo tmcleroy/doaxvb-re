@@ -24,6 +24,9 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_VIGNETTE,
     RECOMP_CAMERA_SETTING_GRAIN,
     RECOMP_CAMERA_SETTING_LETTERBOX,
+    RECOMP_CAMERA_SETTING_ORBIT,
+    RECOMP_CAMERA_SETTING_HIDE_BALL,
+    RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -36,6 +39,15 @@ typedef enum RecompCameraFocus {
     RECOMP_CAMERA_FOCUS_COUNT
 } RecompCameraFocus;
 
+typedef enum RecompCameraOrbit {
+    RECOMP_CAMERA_ORBIT_OFF,
+    /* The sticks go round the point in focus instead of flying. */
+    RECOMP_CAMERA_ORBIT_MANUAL,
+    /* As manual, turning slowly by itself. */
+    RECOMP_CAMERA_ORBIT_TURNTABLE,
+    RECOMP_CAMERA_ORBIT_COUNT
+} RecompCameraOrbit;
+
 typedef struct RecompCameraSettings {
     bool depth_of_field;
     RecompCameraFocus focus;
@@ -47,6 +59,9 @@ typedef struct RecompCameraSettings {
     unsigned vignette;    /* tenths */
     unsigned grain;       /* tenths */
     unsigned letterbox;   /* index into the aspect ratios */
+    RecompCameraOrbit orbit;
+    bool hide_ball;       /* in a match */
+    bool hide_others;     /* every character but the chosen one */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);

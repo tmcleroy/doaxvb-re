@@ -42,6 +42,24 @@ enum {
     RECOMP_FREE_CAMERA_FAST_SCALE = 4,
 };
 
+/* Orbiting a point: the camera stays on a sphere around the pivot and
+   always faces it. Angles in radians; the azimuth is the heading from the
+   pivot out to the camera, the elevation positive above the pivot. */
+typedef struct RecompFreeCameraOrbit {
+    float pivot[3];
+    float azimuth, elevation, distance;
+} RecompFreeCameraOrbit;
+
+/* Starts orbiting the point `distance` ahead of the camera, from where the
+   camera is now. False when the distance is not positive. */
+bool recomp_free_camera_orbit_begin(const RecompFreeCamera *camera, float distance,
+    RecompFreeCameraOrbit *orbit);
+/* One step: move[0] and look[0] go round, look[1] up and over, move[2] in
+   and out, move[1] raises the pivot; `spin` adds radians per second of
+   turntable. The camera is placed on the sphere facing the pivot. */
+void recomp_free_camera_orbit_step(RecompFreeCamera *camera, RecompFreeCameraOrbit *orbit,
+    const RecompFreeCameraControls *controls, float spin, float seconds);
+
 /* Starts the camera where the game's camera is. False leaves it untouched
    when eye and target coincide or are not finite. */
 bool recomp_free_camera_begin(RecompFreeCamera *camera,

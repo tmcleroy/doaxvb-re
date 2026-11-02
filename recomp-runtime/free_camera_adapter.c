@@ -8,6 +8,7 @@
 #include "overlay_text.h"
 #include "screenshot.h"
 #include "camera_settings.h"
+#include "viewer_menu_adapter.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -114,6 +115,8 @@ static const float MOUSE_RADIANS_PER_PIXEL = 0.004f;
 static const float FRAME_DISTANCE = 2.5f;
 static const float FRAME_LIFT = 0.15f;
 static const float FRAME_FOV = 0.75f;
+/* Turntable: radians a second, a turn in about 18 seconds. */
+static const float TURNTABLE_RATE = 0.35f;
 /* The free camera steps once per presented frame. */
 static const float FRAME_SECONDS = 1.0f / 60.0f;
 
@@ -167,6 +170,11 @@ static struct {
     RecompCameraSettings settings;
     /* How far ahead of the camera the chosen character is; zero for none. */
     float character_focus;
+    /* Orbit and turntable (camera settings): the sphere the camera is on. */
+    RecompFreeCameraOrbit orbit;
+    bool orbiting;
+    /* Characters the settings hid. */
+    uint32_t settings_hidden;
 } state = {.enabled = -1, .controller_hints = -1};
 
 static uint64_t milliseconds(void)
@@ -696,6 +704,7 @@ static void build_camera(void)
         bool reset = analog(&state.pad, ANALOG_Y) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_R);
         bool resetting = reset && !state.reset_held;
         if (resetting) reset_character();
+        if (resetting) state.orbiting = false;
         if (resetting && state.viewer && state.started && state.home_saved) {
             /* The viewer's view is the one it first framed her in; framing
                her again would follow her moving hips. */
@@ -716,7 +725,20 @@ static void build_camera(void)
             const double now = seconds_now();
             double seconds = now - state.stepped_seconds;
             if (!(seconds > 0.0) || seconds > 0.1) seconds = FRAME_SECONDS;
-            recomp_free_camera_step(&state.camera, &controls, (float)seconds);
+            if (state.settings.orbit != RECOMP_CAMERA_ORBIT_OFF) {
+                /* Round the point in focus: the character in the middle of
+                   the picture, or the camera's target. */
+                if (!state.orbiting) {
+                    float distance = state.character_focus > 0.0f ? state.character_focus : state.camera.focus;
+                    state.orbiting = recomp_free_camera_orbit_begin(&state.camera, distance, &state.orbit);
+                }
+                const float spin = state.settings.orbit == RECOMP_CAMERA_ORBIT_TURNTABLE ? TURNTABLE_RATE : 0.0f;
+                if (state.orbiting)
+                    recomp_free_camera_orbit_step(&state.camera, &state.orbit, &controls, spin, (float)seconds);
+            } else {
+                state.orbiting = false;
+                recomp_free_camera_step(&state.camera, &controls, (float)seconds);
+            }
             state.stepped_frame = frame;
             state.stepped_seconds = now;
         }
@@ -932,6 +954,58 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     }
 }
 
+/* The settings hide the ball (in a match) and every character but the
+   chosen one while the camera flies; the model viewer does its own hiding. */
+/* The character nearest the middle of the view, by her hips; false for none
+   within the field of view. */
+static bool centred_actor(uint32_t *chosen)
+{
+    float target[3], forward[3], length = 0.0f;
+    recomp_free_camera_target(&state.camera, target);
+    for (unsigned i = 0u; i < 3u; ++i) {
+        forward[i] = target[i] - state.camera.position[i];
+        length += forward[i] * forward[i];
+    }
+    length = sqrtf(length);
+    if (!(length > 0.0f)) return false;
+    float best = cosf(0.5f * state.camera.fov);
+    bool found = false;
+    for (uint32_t actor = 0u; actor < 4u; ++actor) {
+        float hips[3], ahead = 0.0f, distance = 0.0f;
+        if (!recomp_actor_pose_hips(actor, hips)) continue;
+        for (unsigned i = 0u; i < 3u; ++i) {
+            const float offset = hips[i] - state.camera.position[i];
+            ahead += offset * forward[i] / length;
+            distance += offset * offset;
+        }
+        distance = sqrtf(distance);
+        const float centred = distance > 0.0f ? ahead / distance : -1.0f;
+        if (centred > best) {
+            best = centred;
+            *chosen = actor;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static void apply_hiding(void)
+{
+    recomp_viewer_request_ball_hidden(state.active && state.settings.hide_ball);
+    if (state.viewer) return;
+    uint32_t mask = 0u;
+    if (state.active && state.settings.hide_others) {
+        /* On the way in, the girl in view becomes the chosen one. */
+        uint32_t actor;
+        if (state.settings_hidden == 0u && centred_actor(&actor)) recomp_actor_pose_choose(actor);
+        RecompActorPoseStatus pose;
+        recomp_actor_pose_status(&pose);
+        mask = 0xFu & ~(1u << pose.actor);
+    }
+    if (mask != state.settings_hidden) recomp_actor_pose_set_hidden(mask);
+    state.settings_hidden = mask;
+}
+
 void recomp_free_camera_overlay(bool viewer)
 {
     RecompOverlayText text;
@@ -947,6 +1021,7 @@ void recomp_free_camera_overlay(bool viewer)
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     effects.active = effects.active && state.active && state.started;
     recomp_camera_effects_publish(&effects);
+    apply_hiding();
 }
 #else
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)

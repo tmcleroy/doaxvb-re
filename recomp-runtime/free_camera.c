@@ -151,3 +151,52 @@ void recomp_free_camera_target(const RecompFreeCamera *camera, float target[3])
         target[i] = camera->position[i] + forward[i] * camera->focus;
     }
 }
+
+static const float ORBIT_MIN_DISTANCE = 0.3f;
+static const float ORBIT_MAX_DISTANCE = 200.0f;
+
+static void place_on_orbit(RecompFreeCamera *camera, const RecompFreeCameraOrbit *orbit)
+{
+    float level = cosf(orbit->elevation);
+    float out[AXES] = {sinf(orbit->azimuth) * level, sinf(orbit->elevation), cosf(orbit->azimuth) * level};
+    for (unsigned i = 0u; i < AXES; ++i) camera->position[i] = orbit->pivot[i] + out[i] * orbit->distance;
+    /* Facing the pivot: the opposite heading and pitch. */
+    camera->heading = remainderf(orbit->azimuth + PI, 2.0f * PI);
+    camera->pitch = -orbit->elevation;
+    camera->focus = orbit->distance;
+}
+
+bool recomp_free_camera_orbit_begin(const RecompFreeCamera *camera, float distance,
+    RecompFreeCameraOrbit *orbit)
+{
+    if (camera == NULL || orbit == NULL || !(distance > 0.0f) || !isfinite(distance)) return false;
+    float forward[AXES];
+    forward_of(camera, forward);
+    for (unsigned i = 0u; i < AXES; ++i) orbit->pivot[i] = camera->position[i] + forward[i] * distance;
+    orbit->azimuth = remainderf(camera->heading + PI, 2.0f * PI);
+    orbit->elevation = -camera->pitch;
+    orbit->distance = clampf(distance, ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE);
+    return true;
+}
+
+void recomp_free_camera_orbit_step(RecompFreeCamera *camera, RecompFreeCameraOrbit *orbit,
+    const RecompFreeCameraControls *controls, float spin, float seconds)
+{
+    if (camera == NULL || orbit == NULL || controls == NULL || !(seconds > 0.0f)) return;
+    float scale = controls->fast ? (float)RECOMP_FREE_CAMERA_FAST_SCALE : 1.0f;
+    if (controls->slow) scale /= (float)RECOMP_FREE_CAMERA_FAST_SCALE;
+    const float turn = TURN_RATE * scale * seconds;
+    const float round = clampf(controls->move[0], -1.0f, 1.0f) + clampf(controls->look[0], -1.0f, 1.0f);
+    /* Right goes round to the right: the camera moves toward -heading. */
+    orbit->azimuth = remainderf(orbit->azimuth + round * turn + (isfinite(spin) ? spin : 0.0f) * seconds +
+        (isfinite(controls->turn[0]) ? -controls->turn[0] : 0.0f), 2.0f * PI);
+    orbit->elevation = clampf(orbit->elevation - clampf(controls->look[1], -1.0f, 1.0f) * turn +
+        (isfinite(controls->turn[1]) ? -controls->turn[1] : 0.0f), -PITCH_LIMIT, PITCH_LIMIT);
+    orbit->distance = clampf(orbit->distance *
+        expf(-clampf(controls->move[2], -1.0f, 1.0f) * scale * seconds), ORBIT_MIN_DISTANCE, ORBIT_MAX_DISTANCE);
+    orbit->pivot[1] += clampf(controls->move[1], -1.0f, 1.0f) * camera->speed * scale * seconds;
+    camera->fov = clampf(
+        camera->fov * expf(-clampf(controls->zoom, -1.0f, 1.0f) * ZOOM_RATE * seconds),
+        FOV_MIN, FOV_MAX);
+    place_on_orbit(camera, orbit);
+}

@@ -330,8 +330,21 @@ the sticks, WASD and the right mouse button still fly.
 | Filter | None, Warm, Cool, Vivid, Muted, Black and white, Sepia |
 | Vignette, Film grain | 0 to 100% |
 | Letterbox | Off, 2.39:1, 1.85:1, 16:9, 4:3, 1:1 |
+| Orbit | Off, Around the focus, Turntable |
+| Ball | Shown / Hidden (in a match) |
+| Other girls | Shown / Hidden |
 
-The settings apply only while the camera flies and only to the window and
+Orbit starts from where the camera is, round the point in focus: the
+character nearest the middle of the picture, else the camera's target. The
+left stick (A and D) and the right stick go round and over, forward and back
+move in and out, and the triggers (Q and E) raise the point; Turntable also
+turns by itself, once in about 18 seconds (`recomp_free_camera_orbit_step` in
+`free_camera.c`). Hiding the other girls first chooses the girl nearest the
+middle of the view, by her hips, and hides the rest as the model viewer does;
+hiding the ball uses the model viewer's ball range, so it works only in a
+match.
+
+The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They
 last until the runner quits. The rows and their steps are
 `recomp-runtime/camera_settings.c`; what the presenter draws is

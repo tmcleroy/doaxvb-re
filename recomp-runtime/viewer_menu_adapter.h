@@ -21,6 +21,9 @@ void recomp_viewer_install(void);
 /* Port 0's input on its way to the game: the viewer confirms the other
    players' picks in character select by itself. */
 void recomp_viewer_input(RecompInputGamepad *gamepad);
+/* The free camera's settings ask for the ball hidden while it flies in a
+   match; the model viewer hides it anyway. */
+void recomp_viewer_request_ball_hidden(bool hide);
 
 #ifdef __cplusplus
 }

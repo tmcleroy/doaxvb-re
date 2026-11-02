@@ -97,6 +97,27 @@ int main(void)
     check(recomp_free_camera_begin(&camera, eye, above, 0.8f), "begin looking straight up");
     check(camera.pitch < 1.5708f, "a vertical view is clamped below straight up");
 
+    /* Orbit: start 4 units in front of a camera at the origin looking down +Z. */
+    const float down_z[3] = {0.0f, 0.0f, 10.0f};
+    RecompFreeCameraOrbit orbit;
+    RecompFreeCameraControls still = {0};
+    check(recomp_free_camera_begin(&camera, origin, down_z, 0.8f), "begin for orbiting");
+    check(recomp_free_camera_orbit_begin(&camera, 4.0f, &orbit), "begin an orbit");
+    check(near(orbit.pivot[2], 4.0f) && near(orbit.distance, 4.0f), "the pivot is the distance ahead");
+    recomp_free_camera_orbit_step(&camera, &orbit, &still, 0.0f, 1.0f / 60.0f);
+    check(near(camera.position[0], 0.0f) && near(camera.position[2], 0.0f), "a still orbit keeps the camera");
+    /* A quarter turn of turntable puts the camera beside the pivot, facing it. */
+    recomp_free_camera_orbit_step(&camera, &orbit, &still, 1.5707963f, 1.0f);
+    recomp_free_camera_target(&camera, target);
+    check(near(fabsf(camera.position[0]), 4.0f) && near(camera.position[2], 4.0f),
+        "a quarter turn goes round to the side");
+    check(near(target[0], 0.0f) && near(target[2], 4.0f), "the camera still faces the pivot");
+    RecompFreeCameraControls closer = {0};
+    closer.move[2] = 1.0f;
+    recomp_free_camera_orbit_step(&camera, &orbit, &closer, 0.0f, 0.5f);
+    check(orbit.distance < 4.0f && near(camera.focus, orbit.distance), "forward moves in");
+    check(!recomp_free_camera_orbit_begin(&camera, 0.0f, &orbit), "no orbit around the eye");
+
     if (failures == 0) printf("free camera test passed\n");
     return failures == 0 ? 0 : 1;
 }

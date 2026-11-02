@@ -83,6 +83,15 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_LETTERBOX:
         settings->letterbox = (unsigned)wrap((int)settings->letterbox + steps, LETTERBOX_COUNT);
         break;
+    case RECOMP_CAMERA_SETTING_ORBIT:
+        settings->orbit = (RecompCameraOrbit)wrap((int)settings->orbit + steps, RECOMP_CAMERA_ORBIT_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_HIDE_BALL:
+        if (steps % 2 != 0) settings->hide_ball = !settings->hide_ball;
+        break;
+    case RECOMP_CAMERA_SETTING_HIDE_OTHERS:
+        if (steps % 2 != 0) settings->hide_others = !settings->hide_others;
+        break;
     default:
         break;
     }
@@ -127,6 +136,17 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         break;
     case RECOMP_CAMERA_SETTING_LETTERBOX:
         snprintf(text, size, "Letterbox: %s", LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].name);
+        break;
+    case RECOMP_CAMERA_SETTING_ORBIT: {
+        static const char *const names[RECOMP_CAMERA_ORBIT_COUNT] = {"Off", "Around the focus", "Turntable"};
+        snprintf(text, size, "Orbit: %s", names[settings->orbit % RECOMP_CAMERA_ORBIT_COUNT]);
+        break;
+    }
+    case RECOMP_CAMERA_SETTING_HIDE_BALL:
+        snprintf(text, size, "Ball: %s", settings->hide_ball ? "Hidden" : "Shown");
+        break;
+    case RECOMP_CAMERA_SETTING_HIDE_OTHERS:
+        snprintf(text, size, "Other girls: %s", settings->hide_others ? "Hidden" : "Shown");
         break;
     default:
         snprintf(text, size, "?");

@@ -14,7 +14,9 @@
   the middle of the picture (or the centre, or a set distance) with a real
   f-number, field of view, roll, colour filters, vignette, film grain and
   letterbox bars. The effects show on the window and in screenshots, on
-  macOS and Linux so far. See `docs/free-camera.md`.
+  macOS and Linux so far. The list can also orbit round the girl in focus
+  (by hand or as a turntable) and hide the ball or the other girls. See
+  `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27
 

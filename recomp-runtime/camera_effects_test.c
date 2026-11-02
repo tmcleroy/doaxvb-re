@@ -73,6 +73,10 @@ int main(void)
     recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_LETTERBOX, 1, &fov, 0.0f);
     recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
     check(fabsf(drawn.letterbox - 2.39f) < 1e-4f, "letterbox 2.39:1");
+    recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_ORBIT, -1, &fov, 0.0f);
+    check(settings.orbit == RECOMP_CAMERA_ORBIT_TURNTABLE, "orbit wraps to turntable");
+    recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_HIDE_OTHERS, 1, &fov, 0.0f);
+    check(settings.hide_others && !settings.hide_ball, "hiding toggles one thing");
     char line[96];
     recomp_camera_settings_describe(&settings, RECOMP_CAMERA_SETTING_APERTURE, fov, 0.0f, line, sizeof line);
     check(strcmp(line, "Aperture: f/1.4") == 0, "rows describe themselves");
