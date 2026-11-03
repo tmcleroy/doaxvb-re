@@ -11,6 +11,7 @@
 
 #if !defined(_WIN32)
 #include <dlfcn.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -3453,6 +3454,14 @@ void recordingStop(RecompD3dPresenter *p)
     r = {};
 }
 
+// A shell word for any path: in single quotes, each ' as '\''.
+std::string shellQuoted(const std::string &text)
+{
+    std::string quoted = "'";
+    for (char c : text) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return quoted + "'";
+}
+
 bool recordingStart(RecompD3dPresenter *p)
 {
     auto &r = p->recording;
@@ -3464,13 +3473,18 @@ bool recordingStart(RecompD3dPresenter *p)
         return false;
     }
     if (!recomp_screenshot_path(path, sizeof path)) return false;
-    r.path = path;
-    r.path.replace(r.path.size() - 4u, 4u, ".mp4");
+    // The name is free as a .png; the video takes the first free .mp4 by it.
+    const std::string stem(path, std::strlen(path) - 4u);
+    r.path = stem + ".mp4";
+    for (unsigned n = 2u; access(r.path.c_str(), F_OK) == 0 && n < 100u; ++n)
+        r.path = stem + "-v" + std::to_string(n) + ".mp4";
+    // A write to an ffmpeg that has quit fails with EPIPE instead of ending the game.
+    signal(SIGPIPE, SIG_IGN);
     r.width = mainWidth(p);
     r.height = mainHeight(p);
-    const std::string command = "'" + ffmpeg + "' -y -loglevel error -f rawvideo -pix_fmt bgra -s " +
+    const std::string command = shellQuoted(ffmpeg) + " -n -loglevel error -f rawvideo -pix_fmt bgra -s " +
         std::to_string(r.width) + "x" + std::to_string(r.height) + " -r 60 -i - -c:v libx264 -preset veryfast "
-        "-crf 18 -pix_fmt yuv420p '" + r.path + "'";
+        "-crf 18 -pix_fmt yuv420p " + shellQuoted(r.path);
     r.pipe = popen(command.c_str(), "w");
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, r.width * r.height * 4u, 0};
     for (auto &buffer : r.buffers) buffer = SDL_CreateGPUTransferBuffer(p->device, &info);
@@ -3601,19 +3615,30 @@ void bigShotStep(RecompD3dPresenter *p)
         return;
     }
     unsigned n = recomp_camera_effects_take_big_shot();
-    if (n < 2u || !p->effects.enabled) return;
+    if (n == 0u) return;
+    // Whatever cannot be drawn big is saved at the frame's own size.
+    if (n < 2u || !p->effects.enabled) {
+        recomp_screenshot_request_frame();
+        return;
+    }
     for (; n >= 2u; --n) {
         const float scale = p->scale * float(n);
         const double height = double(p->config.height) * scale, width = height * 16.0 / 9.0;
         if (width <= 16384.0 && height <= 16384.0 && width * height <= 40.0e6) break;
     }
-    if (n < 2u) return;
+    if (n < 2u) {
+        std::fprintf(stderr, "recomp screenshot: too big to draw; saving the frame as it is\n");
+        recomp_screenshot_request_frame();
+        return;
+    }
     big.scale = p->scale;
     big.samples = p->msaa_samples;
     big.msaa_count = p->msaa_count;
     if (resizeMain(p, p->scale * float(n), SDL_GPU_SAMPLECOUNT_1)) {
         big.active = true;
         std::fprintf(stderr, "recomp screenshot: next frame at %ux%u\n", mainWidth(p), mainHeight(p));
+    } else {
+        recomp_screenshot_request_frame();
     }
 }
 
@@ -4223,11 +4248,18 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // Recording follows the free camera's request, at one size from start to end.
         RecompCameraEffects camera_effects;
         recomp_camera_effects_take(&camera_effects);
-        const bool record = presenter->effects.enabled && camera_effects.recording && !presenter->big_shot.active;
-        if (presenter->recording.pipe &&
-            (!record || presenter->recording.width != mainWidth(presenter) || presenter->recording.height != mainHeight(presenter)))
+        // A big screenshot's frame is left out of the video, which goes on after it.
+        const bool record = presenter->effects.enabled && camera_effects.recording;
+        const bool resized = !presenter->big_shot.active &&
+            (presenter->recording.width != mainWidth(presenter) || presenter->recording.height != mainHeight(presenter));
+        if (presenter->recording.pipe && (!record || resized || presenter->recording.failed)) {
+            const bool failed = presenter->recording.failed;
             recordingStop(presenter);
-        if (record && !presenter->recording.pipe && !presenter->recording.warned) recordingStart(presenter);
+            // ffmpeg quit (no encoder, a full disk): not again until asked again.
+            presenter->recording.warned = failed;
+        }
+        if (record && !presenter->recording.pipe && !presenter->recording.warned && !presenter->big_shot.active)
+            recordingStart(presenter);
         if (!record) presenter->recording.warned = false;
         // A big screenshot's frame was drawn at its size: save it whole.
         if (presenter->big_shot.active) saveScreenshot(presenter, cmdbuf, shown);

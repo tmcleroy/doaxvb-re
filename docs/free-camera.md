@@ -379,7 +379,8 @@ on screen but a pause of about a second. Depth of field gathers n² times as
 many taps in that frame (up to 1536), so its blur is as smooth as at 1x. Sizes
 shrink to keep the frame within 16384 pixels a side and 40 million in all
 (4x at 1080p, 7680x4320, fits). The PNG is uncompressed, about 130 MB at
-7680x4320. The D3D11 presenter does not draw big screenshots yet.
+7680x4320. The D3D11 presenter does not draw big screenshots yet; there, or
+when no bigger size fits, the frame is saved at its own size.
 
 The key light settings change scene light 0 in the readable light code
 (docs/stage-lights.md): the angle turns its direction and the sun the
@@ -407,11 +408,14 @@ frame shown while it plays (effects included, the panel not) to ffmpeg as raw
 BGRA, which writes an H.264 MP4 beside the screenshots. Frames are downloaded
 into a ring of three buffers and written two presents later, so the GPU is
 not waited on each frame. ffmpeg comes from `RECOMP_FFMPEG`, or Homebrew's or
-the system's; without it the log says so and nothing is recorded. The game
+the system's; without it the log says so and nothing is recorded. If ffmpeg
+quits (no H.264 encoder, a full disk) the video stops there, the log says so,
+and recording waits until it is turned on again. A screenshot taken while
+recording is left out of the video, which goes on in the same file. The game
 steps once a frame, so a slow encoder slows the scene but not the video.
 
 Slow motion freezes the scene and steps it one frame in every 2, 4 or 8
-shown. At 60 Hz (no `RECOMP_GAME_HZ`) it is smooth: each frame shown is part
+shown. P holds it where it is, and P again lets it go on slowly. At 60 Hz (no `RECOMP_GAME_HZ`) it is smooth: each frame shown is part
 of the way between the last two steps, a step late, so the girls, the ball
 and the foliage move every frame and a recorded video is smooth too
 (`slow_motion.c`). After each step it samples what the high-refresh display
@@ -435,12 +439,16 @@ drawn relative to, for the last 600 frames (`recomp_actor_pose_history_step`),
 and stepping back puts a frame's back. A frozen scene builds no skeletons, so
 they stay; stepping forward goes through the history and then runs the scene
 a frame. Only the characters go back: the ball, the camera and everything
-else stay where the newest frame left them.
+else stay where the newest frame left them. The root block is her whole
+state, so before the scene runs on (a step or a thaw) the newest frame's is
+put back, and a frame whose character type differs (from before a scene
+change) is left out.
 
 Eye contact uses the game's own look-at, which turns a girl's neck and head
 toward the ball (its position at `0x00416630`) by her look weight (the float
-at +0x164 of the character state in EBX when 0x000B01E0 builds her
-skeleton): for each build the camera's position stands in for the ball at
+at +0x164 of her look record, `0x005E5FE8 + n * 0x180`, which 0x000B01E0
+works out as it builds her skeleton and hands to the look-at, 0x000B1B50):
+for each build the camera's position stands in for the ball at
 full weight, and both are put back after. The game limits the turn (60
 degrees each way, 60 down, 10 up; the neck takes 30% and the head 70%). With
 eyes, each eye bone (21 and 17) then turns toward the camera about its own

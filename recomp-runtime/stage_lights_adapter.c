@@ -100,7 +100,8 @@ static const float LIGHT_ELEVATION = 0.45f;
 
 static struct {
     bool on;
-    float saved_sun[3];
+    /* The game's sun, and the one last put in its place. */
+    float saved_sun[3], written_sun[3];
     RecompTimeOfDayLook stage, target;
 } day;
 
@@ -145,7 +146,16 @@ static void time_of_day_light(uint32_t slot, RecompStageLight *light, float towa
     }
     if (!day.on) {
         recomp_guest_load(day.saved_sun, 0x00333870u, sizeof day.saved_sun);
+        memcpy(day.written_sun, day.saved_sun, sizeof day.written_sun);
         day.on = true;
+    } else {
+        /* A new scene sets its own sun: that is the one to turn and put back. */
+        float now[3];
+        recomp_guest_load(now, 0x00333870u, sizeof now);
+        if (memcmp(now, day.written_sun, sizeof now) != 0) {
+            memcpy(day.saved_sun, now, sizeof now);
+            memcpy(day.written_sun, now, sizeof now);
+        }
     }
     if (slot == 0u) {
         if (timed) {
@@ -174,6 +184,7 @@ static void time_of_day_light(uint32_t slot, RecompStageLight *light, float towa
     turn_about_vertical(sun, effects.light_angle);
     turn_about_vertical(aimed, effects.light_angle);
     recomp_guest_store(0x00333870u, sun, sizeof sun);
+    memcpy(day.written_sun, sun, sizeof sun);
     memcpy(toward, aimed, sizeof aimed);
     if (effects.light_strength > 0.0f)
         for (unsigned c = 0u; c < 3u; ++c) light->diffuse[c] *= effects.light_strength;

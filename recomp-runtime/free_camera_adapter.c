@@ -189,6 +189,8 @@ static struct {
     unsigned play_frames;
     /* Slow motion froze the scene, and frames shown since its last step. */
     bool slowed;
+    /* P in slow motion holds it where it is; P again goes on slowly. */
+    bool slow_paused;
     unsigned slow_frames;
     /* Smooth slow motion: the scene ran on, so it is sampled again (as it
        went on from the last sample, or not); who was hidden at the sample;
@@ -522,7 +524,10 @@ static bool take_sample(const RecompInputGamepad *raw)
        and . free. */
     bool freeze = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_P) ||
         (state.active && (gamepad->buttons & XBOX_START) != 0u);
-    if (freeze && !state.freeze_held) {
+    if (freeze && !state.freeze_held && state.slowed && recomp_scene_freeze_active()) {
+        state.slow_paused = !state.slow_paused;
+        fprintf(stderr, "recomp free camera: slow motion %s\n", state.slow_paused ? "paused" : "goes on");
+    } else if (freeze && !state.freeze_held) {
         bool pause = !recomp_scene_freeze_active();
         recomp_scene_freeze_set(pause);
         /* A trace starts again at each pause. */
@@ -1107,6 +1112,10 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
    game left it, and is sampled again once it has run. */
 static void scene_runs(void)
 {
+    /* The root blocks stepped back hold each character's whole state: the
+       scene goes on from the newest frame, not the one shown. */
+    const unsigned back = recomp_actor_pose_history_back();
+    if (back != 0u) recomp_actor_pose_history_step((int)back);
     recomp_slow_motion_restore();
     state.sample_due = true;
     state.sample_continues = state.slowed;
@@ -1121,9 +1130,16 @@ static void step_slow_motion(void)
     const unsigned every = state.active && state.settings_ready ? 1u << state.settings.slow : 1u;
     const bool smooth = recomp_game_requested_hz() == 0u;
     if (every > 1u) {
+        /* Anything else that let the scene run leaves slow motion on: slow
+           it again. */
+        if (state.slowed && !recomp_scene_freeze_active()) {
+            state.slowed = false;
+            recomp_slow_motion_reset();
+        }
         if (!state.slowed) {
             recomp_scene_freeze_set(true);
             state.slowed = true;
+            state.slow_paused = false;
             state.slow_frames = 0u;
             state.sample_due = true;
             state.sample_continues = false;
@@ -1136,6 +1152,7 @@ static void step_slow_motion(void)
             state.slow_frames = 0u;
         }
         state.sample_due = false;
+        if (state.slow_paused) return;
         if (state.slow_frames >= every) {
             state.slow_frames = 0u;
             recomp_scene_freeze_step();
@@ -1151,6 +1168,7 @@ static void step_slow_motion(void)
     } else if (state.slowed) {
         recomp_scene_freeze_set(false);
         state.slowed = false;
+        state.slow_paused = false;
         recomp_slow_motion_reset();
     }
 }

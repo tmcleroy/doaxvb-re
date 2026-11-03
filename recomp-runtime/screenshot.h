@@ -28,6 +28,9 @@ static inline bool recomp_screenshot_key(bool f12, bool shift, bool texture_keys
    game side asks for one; a presenter, on whatever thread, takes the request
    when it presents and saves the frame it rendered. */
 void recomp_screenshot_request(void);
+/* The frame as it is drawn, past the free camera's bigger sizes: a presenter
+   that cannot draw a big screenshot saves this one instead. */
+void recomp_screenshot_request_frame(void);
 bool recomp_screenshot_take_request(void);
 
 /* Once a frame: when RECOMP_SCREENSHOT_TRIGGER names a file that exists,

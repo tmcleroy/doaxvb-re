@@ -2,6 +2,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "camera_effects.h"
 #include "overlay_d3d11.h"
 #include "screenshot.h"
 #include "texture_replacement.h"
@@ -4360,6 +4361,9 @@ RecompD3dPresenterError submitPresent(
     // window keeps the last picture presented.
     if (present.hold) return RECOMP_D3D_PRESENTER_OK;
     {
+        // This presenter draws no big screenshots: one asked for is saved at
+        // the frame's own size.
+        if (recomp_camera_effects_take_big_shot() != 0u) recomp_screenshot_request_frame();
         if (recomp_screenshot_take_request()) saveScreenshot(presenter);
         // The runtime's overlay text goes on the window's back buffer, after
         // the front buffer the game reads back has been copied.

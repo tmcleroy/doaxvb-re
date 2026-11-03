@@ -70,6 +70,11 @@ void recomp_screenshot_set_interceptor(bool (*interceptor)(void))
 void recomp_screenshot_request(void)
 {
     if (screenshot_interceptor != NULL && screenshot_interceptor()) return;
+    recomp_screenshot_request_frame();
+}
+
+void recomp_screenshot_request_frame(void)
+{
 #ifdef _WIN32
     InterlockedExchange(&requested, 1);
 #else

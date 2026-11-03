@@ -62,6 +62,9 @@ enum {
     SHARED_BANK_ENTRY = 4u,
     BANK_PLACEHOLDER = 0xFA4u,
     ROOT_FIRST = 0x004D6FF0u,
+    /* Each character's look record: +0x164 her look weight (float). */
+    LOOK_FIRST = 0x005E5FE8u,
+    LOOK_STRIDE = 0x180u,
     ROOT_STRIDE = 0xBCu,
     ROOT_POSITION = 0x08u,
     BUILD_SKELETON = 0x000B01E0u,
@@ -391,9 +394,11 @@ static void record_bones(uint32_t actor)
 
 /* Eye contact (recomp_actor_pose_set_look): the game's own look-at turns a
    character's neck and head toward the ball (0x00416630) by her look weight
-   (+0x164 of the state in EBX at the build). For the build, the camera
-   stands in for the ball at full weight; then each eye bone (21 and 17)
-   turns toward the camera about its own centre, its +Z the line of sight. */
+   (+0x164 of her look record, 0x005E5FE8 + n * 0x180, which 0x000B01E0
+   works out from EAX and hands to the look-at, 0x000B1B50, in ESI). For
+   the build, the camera stands in for the ball at full weight; then each
+   eye bone (21 and 17) turns toward the camera about its own centre, its +Z
+   the line of sight. */
 static struct {
     bool on, eyes;
     float eye[3];
@@ -432,10 +437,9 @@ static void aim_eye(uint32_t actor, uint32_t bone)
 static void build_skeleton(void)
 {
     const uint32_t actor = recomp_runtime.registers.eax;
-    const uint32_t state_address = recomp_runtime.registers.ebx;
+    const uint32_t state_address = LOOK_FIRST + actor * LOOK_STRIDE;
     const bool skipped = actor < ACTOR_COUNT && recomp_scene_freeze_holding();
-    const bool looking = look.on && actor < ACTOR_COUNT && !skipped &&
-        state_address >= 0x1000u && state_address < 0x04000000u - 0x180u;
+    const bool looking = look.on && actor < ACTOR_COUNT && !skipped;
     float ball[3], weight = 0.0f;
     if (looking) {
         recomp_guest_load(ball, 0x00416630u, sizeof ball);
@@ -465,7 +469,9 @@ unsigned recomp_actor_pose_history_step(int step)
     history.back = (unsigned)back;
     const unsigned index = (history.newest + HISTORY - history.back) % HISTORY;
     for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
-        if (!active(actor)) continue;
+        /* A frame from before the scene changed may hold another character
+           in this place (her type, at +1 of the root block): leave her. */
+        if (!active(actor) || history.roots[index][actor][1] != *recomp_memory(root_of(actor) + 1u, 1u)) continue;
         recomp_guest_store(bone_of(actor, 0u), history.bones[index][actor], BONE_COUNT * BONE_SIZE);
         recomp_guest_store(root_of(actor), history.roots[index][actor], ROOT_STRIDE);
     }
