@@ -1340,9 +1340,6 @@ static void step_slow_motion(void)
        the way on: slow motion's blend, `blur` times finer. */
     unsigned blur = state.active && state.settings_ready && smooth && state.settings.motion_blur != 0u ?
         2u << state.settings.motion_blur : 1u;
-#ifdef _WIN32
-    blur = 1u; /* the D3D11 presenter shows each picture; only SDL GPU averages them */
-#endif
     const unsigned every = (state.active && state.settings_ready ? 1u << state.settings.slow : 1u) * blur;
     state.blur = blur;
     if (every > 1u) {

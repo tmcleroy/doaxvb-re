@@ -359,13 +359,13 @@ the sticks, WASD and the right mouse button still fly.
 | Grid | Off, Thirds, Golden ratio, Centre (on screen only, never in screenshots) |
 | Camera spot | 1 to 4: A goes to the spot, X saves the view there |
 | Screenshot background | The scene, or transparent with only the girls kept, plus a depth picture |
-| Backdrop | The scene, or only the girls over Black, Grey studio, White, Green screen or Blue screen (Metal and Vulkan) |
+| Backdrop | The scene, or only the girls over Black, Grey studio, White, Green screen or Blue screen |
 | Camera path | Right adds the flown view as the next of up to 16 keyframes, left removes the last |
 | Path length | 2 to 60 seconds |
 | Play path | Right plays the path from its first view, left stops |
 | Record video | On: playing the path records it to an MP4 |
 | Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
-| Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame (Metal and Vulkan) |
+| Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 | Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
@@ -462,9 +462,8 @@ Swap marked as picture i of n (`recomp_d3d_frame_adapter_set_blur`) skips the
 display wait unless it is the last; the SDL GPU presenter adds each picture,
 effects included, into a half-float target weighted 1/n and shows, saves or
 records the sum on the last (`blurAdd`). A camera path takes n pictures a
-frame, so it keeps its length. The D3D11 presenter does not average, so
-Windows builds leave it off. A big or transparent screenshot's frame is not
-blurred.
+frame, so it keeps its length. A big or transparent screenshot's frame is
+not blurred.
 
 Slow motion freezes the scene and steps it one frame in every 2, 4 or 8
 shown. P holds it where it is, and P again lets it go on slowly. At 60 Hz (no `RECOMP_GAME_HZ`) it is smooth: each frame shown is part
@@ -573,11 +572,29 @@ pixel, and a tap behind the pixel may spread no further than the pixel's own
 blur, so a sharp foreground keeps its edge. A frame whose depth was not
 drawn (a held picture or a scene change) gets no blur. "On her" takes the
 view depth of the character part nearest the middle of the picture: skinned
-draws and lit rigid pieces no larger than 1.2 units (characters are drawn as
-one rigid piece per limb plus skinned joints); with none on screen it
-focuses on the centre. The game's 2D overlay takes the depth beneath it, so
-it blurs with the scene; H hides it. The D3D11 presenter ignores the
-settings so far.
+draws (`recomp_actor_pose_character_world`); with none on screen it focuses
+on the centre. The game's 2D overlay takes the depth beneath it, so it blurs
+with the scene; H hides it.
+
+### On Windows (D3D11)
+
+The D3D11 presenter draws what needs no view depth
+(`d3d_presenter_d3d11_camera.h`): the same effects shader, made HLSL from
+the shared source (`camera_effects_shader.h`), gives the filters, exposure,
+contrast, saturation, vignette, grain, letterbox, bloom and an unoccluded sun
+glare; backdrops leave out every draw that is not a character's and clear to
+their colour; motion blur adds a frame's pictures into a half-float target
+and presents only the last; and Record video sends each frame shown to
+ffmpeg (`RECOMP_FFMPEG`, or `ffmpeg` on the PATH) through a pipe, reading it
+back as it goes. Depth of field, the glare hidden behind things and
+transparent screenshots need the view depth and character mask that the
+draws do not write on D3D11 yet, so they are left off (a transparent
+screenshot is an ordinary one), and big screenshots are saved at the frame's
+own size. The game-side features (time of day, the key, rim and fill
+lights, eye contact, faces, moving girls, slow motion, paths, tracking)
+are the same on every presenter. This was written and compiled without a
+Windows machine to run it on; anything that fails to set up leaves the
+frame as the game drew it.
 
 ## Debugging
 

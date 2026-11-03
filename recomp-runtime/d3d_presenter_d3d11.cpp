@@ -38,6 +38,7 @@
 
 #include "d3d_sun_shadow.h"
 #include "d3d_gbuffer.h"
+#include "d3d_presenter_d3d11_camera.h"
 
 #ifdef RECOMP_SMAA
 #include "AreaTex.h"
@@ -559,6 +560,8 @@ struct RecompD3dPresenter {
     RecompD3dPresenterConfig config{};
     SunShadow sun;
     GBuffer gbuffer;
+    // The free camera's effects (d3d_presenter_d3d11_camera.h).
+    D3d11CameraEffects camera;
     DWORD owner_thread = 0;
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
@@ -810,6 +813,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     sunRelease(presenter->sun);
     presenter->sun.enabled = sun_enabled;
     presenter->gbuffer.release();
+    presenter->camera.release();
+    presenter->camera.failed = false;
     for (auto &timer : presenter->gpu_timers) {
         releaseCom(timer.disjoint);
         releaseCom(timer.begin);
@@ -4065,7 +4070,13 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
         std::fprintf(stderr, "recomp d3d presenter: smaa unavailable\n");
         presenter->smaa = false;
     }
+    // The free camera's picture, when it made one, stands in for the guest's.
+    ID3D11ShaderResourceView *camera_picture = presenter->camera.ownPicture();
     if (!presenter->gamma_enabled && !presenter->smaa) {
+        if (camera_picture != nullptr) {
+            presenter->camera.show(context, output);
+            return true;
+        }
         ID3D11Resource *target = nullptr;
         output->GetResource(&target);
         copyGuestBuffer(presenter, target);
@@ -4077,7 +4088,8 @@ bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
     desc.linear = true;
     desc.width = presenter->config.width;
     desc.height = presenter->config.height;
-    ID3D11ShaderResourceView *source = lookupBackBufferTexture(presenter, desc);
+    ID3D11ShaderResourceView *source = camera_picture != nullptr ? camera_picture
+        : lookupBackBufferTexture(presenter, desc);
     if (source == nullptr) return false;
     if (presenter->smaa) {
         runSmaa(presenter, source,
@@ -4330,12 +4342,25 @@ RecompD3dPresenterError submitPresent(
         presenter->gbuffer.debug_view = (presenter->gbuffer.debug_view + cycles - presenter->gbuffer.cycles_seen) % 3u;
         presenter->gbuffer.cycles_seen = cycles;
     }
+    {
+        // The free camera's effects, a motion blur's sum and a backdrop's colour.
+        RecompD3dTextureDesc desc{};
+        desc.format_byte = 0x12u;
+        desc.linear = true;
+        desc.width = presenter->config.width;
+        desc.height = presenter->config.height;
+        ID3D11ShaderResourceView *back = present.hold ? nullptr : lookupBackBufferTexture(presenter, desc);
+        presenter->camera.present(presenter->device, presenter->context, back, present.blur_index, present.blur_count);
+    }
     if (presenter->gbuffer.enabled && presenter->gbuffer.debug_view) {
         presenter->gbuffer.show(presenter->context, output);
     } else if (!renderOutput(presenter, output)) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     copyFrontBuffer(presenter);
+    // A motion blur's picture before its last is added up, not shown.
+    if (presenter->camera.hide) return RECOMP_D3D_PRESENTER_OK;
+    presenter->camera.record(presenter->device, presenter->context);
     if (presenter->vrr_target_view != nullptr) {
         auto *context = presenter->context;
         D3D11_TEXTURE2D_DESC window{};
@@ -5023,13 +5048,20 @@ RecompD3dPresenterError d3d11_backend_submit(
         if (presenter->sun.enabled && command->data.clear.clear_depth &&
             !command->data.clear.target.offscreen && !command->data.clear.target.no_depth)
             ++presenter->sun.epoch;
-        return submitClear(presenter, command->data.clear);
+    {
+        // A backdrop's frame starts from its colour.
+        RecompD3dPresenterClearCommand clear = command->data.clear;
+        presenter->camera.clearFor(clear);
+        return submitClear(presenter, clear);
+    }
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
         presenter->sun.valid = false;
         presenter->sun.triangles = presenter->sun.epoch = 0;
         return submitPresent(presenter, command->data.present);
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW: {
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
+        // A backdrop's frame draws only the characters.
+        if (presenter->camera.leaveOut(draw)) return RECOMP_D3D_PRESENTER_OK;
 #ifdef RECOMP_RTGI
         RecompD3dVertexLayout layout{};
         if (presenter->rtgi_pending && !draw.target.offscreen &&
