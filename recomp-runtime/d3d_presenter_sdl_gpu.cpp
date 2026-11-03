@@ -629,6 +629,10 @@ struct RecompD3dPresenter {
         uint32_t msaa_count = 1u;
     } big_shot;
 
+    /* A transparent screenshot's frame draws only the characters, over a clear
+       picture, so blended edges hold no scene: it is saved, not shown. */
+    bool clear_shot = false, clear_shot_next = false;
+
     // A video being recorded (recordingFrame).
     struct {
         FILE *pipe = nullptr;
@@ -1321,7 +1325,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     if (sun) s += kMslSunVisibility;
 
     // ps_main
-    if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float2 depth [[color(1)]]; };\n";
+    if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float4 depth [[color(1)]]; };\n";
     s += depth_output ? "fragment PSOut ps_main(VSOut in [[stage_in]],\n" : "fragment float4 ps_main(VSOut in [[stage_in]],\n";
     s += "                        constant TransformUniforms &u [[buffer(0)]],\n";
     if (sun) s += "                        constant SunUniforms &sun [[buffer(1)]],\n";
@@ -1395,8 +1399,9 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "            (func == 6 && alpha >= ref);\n";
     s += "        if (!alpha_pass) discard_fragment();\n";
     s += "    }\n";
-    // View depth, and 1 where a character draws (scene_tint.w 2), for transparent shots.
-    s += depth_output ? "    return PSOut{shaded, float2(in.view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0)};\n"
+    // View depth, and 1 where a character draws (scene_tint.w 2), for transparent
+    // shots; the draw's alpha lets a blended draw cover only its share.
+    s += depth_output ? "    return PSOut{shaded, float4(in.view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0, 0.0, shaded.a)};\n"
                       : "    return shaded;\n";
     s += "}\n";
 
@@ -1680,7 +1685,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "layout(location = 0) out vec4 out_color;\n";
     if (depth_output) {
         s += "layout(location = 9) in float v_view_depth;\n";
-        s += "layout(location = 1) out vec2 out_depth;\n";
+        s += "layout(location = 1) out vec4 out_depth;\n";
     }
     if (two_coords) {
         // Cubic B-spline in four bilinear taps; see the Metal shader.
@@ -1764,7 +1769,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "        if (!alpha_pass) discard;\n";
     s += "    }\n";
     s += "    out_color = shaded;\n";
-    if (depth_output) s += "    out_depth = vec2(v_view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0);\n";
+    if (depth_output) s += "    out_depth = vec4(v_view_depth, u.scene_tint.w > 1.5 ? 1.0 : 0.0, 0.0, shaded.a);\n";
     s += "}\n";
 
     return s;
@@ -2114,6 +2119,17 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     color_descs[1].blend_state.color_write_mask = pkey.depth_write_enable ?
         SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G : 0;
     color_descs[1].blend_state.enable_color_write_mask = true;
+    // A draw blended by its alpha (hair, cloth edges) covers what is behind by
+    // that much: the character mask and view depth blend the same way, so a
+    // transparent screenshot's hair tips are partly see-through.
+    if (pkey.blend_enable && pkey.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        pkey.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && pkey.blend_op == RECOMP_D3D_BLEND_OP_ADD) {
+        auto &b = color_descs[1].blend_state;
+        b.enable_blend = true;
+        b.src_color_blendfactor = b.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        b.dst_color_blendfactor = b.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        b.color_blend_op = b.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    }
     pinfo.target_info.color_target_descriptions = color_descs;
     pinfo.target_info.num_color_targets = depth_output ? 2 : 1;
     pinfo.target_info.depth_stencil_format = depth_fmt;
@@ -3583,6 +3599,12 @@ bool resizeMain(RecompD3dPresenter *p, float scale, SDL_GPUSampleCount samples)
 /* Once a present: a requested big screenshot makes the next frame `n` times
    larger, single sampled (its own size smooths its edges), at most 16384
    pixels a side and 40 million in all; the frame after it goes back. */
+// Transparent screenshots are asked for (the camera effects' setting).
+bool transparentShots(const RecompD3dPresenter *p)
+{
+    return p->effects.enabled && p->effects.transparent && p->effects.depth_resolve != nullptr;
+}
+
 void bigShotStep(RecompD3dPresenter *p)
 {
     auto &big = p->big_shot;
@@ -3614,6 +3636,7 @@ void bigShotStep(RecompD3dPresenter *p)
     big.msaa_count = p->msaa_count;
     if (resizeMain(p, p->scale * float(n), SDL_GPU_SAMPLECOUNT_1)) {
         big.active = true;
+        if (transparentShots(p)) p->clear_shot_next = true;
         std::fprintf(stderr, "recomp screenshot: next frame at %ux%u\n", mainWidth(p), mainHeight(p));
     } else {
         recomp_screenshot_request_frame();
@@ -3690,7 +3713,17 @@ static void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUCommandBuffer *
                     }
                     SDL_UnmapGPUTransferBuffer(presenter->device, depth);
                 }
-                recomp_screenshot_save_layers(bgra, w, h, w * 4u, grey.data());
+                // Drawn over nothing, a partly covered pixel holds only its
+                // share of the colour: divide it out for the PNG's alpha.
+                std::vector<uint8_t> straight(bgra, bgra + size_t(w) * h * 4u);
+                if (presenter->clear_shot)
+                    for (size_t i = 0; i < size_t(w) * h; ++i) {
+                        const unsigned a = straight[i * 4u + 3u];
+                        if (a == 0u || a == 255u) continue;
+                        for (unsigned c = 0; c < 3u; ++c)
+                            straight[i * 4u + c] = uint8_t(std::min(255u, (straight[i * 4u + c] * 255u + a / 2u) / a));
+                    }
+                recomp_screenshot_save_layers(straight.data(), w, h, w * 4u, grey.data());
             } else {
                 recomp_screenshot_save(bgra, w, h, w * 4u);
             }
@@ -4121,6 +4154,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         } else {
             color_info.load_op = SDL_GPU_LOADOP_LOAD;
         }
+        // A transparent screenshot's frame starts from nothing.
+        if (is_main && presenter->clear_shot && (clear.clear_color || clear.clear_depth)) {
+            color_info.load_op = SDL_GPU_LOADOP_CLEAR;
+            color_info.clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+        }
 
         SDL_GPUDepthStencilTargetInfo depth_info{};
         const bool use_depth = (target_depth != nullptr) && (clear.clear_depth || clear.clear_stencil);
@@ -4174,7 +4212,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         Uint32 swap_w = 0, swap_h = 0;
         // A held frame updates the front buffer copy, but the window keeps
         // the last picture presented.
-        if (!present.hold && SDL_WaitAndAcquireGPUSwapchainTexture(
+        const bool clear_shot = presenter->clear_shot;
+        if (!present.hold && !clear_shot && SDL_WaitAndAcquireGPUSwapchainTexture(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
@@ -4213,7 +4252,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        if (presenter->frontbuffer_copy) {
+        if (presenter->frontbuffer_copy && !clear_shot) {
             SDL_GPUCopyPass *copypass = SDL_BeginGPUCopyPass(cmdbuf);
             if (copypass) {
                 SDL_GPUTextureLocation src_loc{presenter->backbuffer_resolve, 0, 0, 0, 0};
@@ -4239,13 +4278,21 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         if (record && !presenter->recording.pipe && !presenter->recording.warned && !presenter->big_shot.active)
             recordingStart(presenter);
         if (!record) presenter->recording.warned = false;
-        // A big screenshot's frame was drawn at its size: save it whole.
-        if (presenter->big_shot.active) saveScreenshot(presenter, cmdbuf, shown);
-        else if (!present.hold && recomp_screenshot_take_request()) saveScreenshot(presenter, cmdbuf, shown);
+        // A big screenshot's frame was drawn at its size, a transparent one
+        // with only the characters: save it whole. A transparent one asked
+        // for now is drawn next frame.
+        bool save = presenter->big_shot.active || clear_shot;
+        if (!save && !present.hold && recomp_screenshot_take_request()) {
+            if (transparentShots(presenter)) presenter->clear_shot_next = true;
+            else save = true;
+        }
+        if (save) saveScreenshot(presenter, cmdbuf, shown);
         else if (presenter->recording.pipe && !present.hold) recordingFrame(presenter, cmdbuf, shown);
         else SDL_SubmitGPUCommandBuffer(cmdbuf);
         presenter->current_command_buffer = nullptr;
         bigShotStep(presenter);
+        presenter->clear_shot = presenter->clear_shot_next;
+        presenter->clear_shot_next = false;
         if (present.hold) return RECOMP_D3D_PRESENTER_OK;
         ++presenter->present_count;
 
@@ -4304,6 +4351,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
+        if (presenter->clear_shot && target_color == presenter->backbuffer_color && !draw.character)
+            return RECOMP_D3D_PRESENTER_OK;
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, host_w, host_h);
 
         // Target switch or sampling current render target requires flushing active segment

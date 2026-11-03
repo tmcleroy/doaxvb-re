@@ -397,11 +397,14 @@ setting on, the view-depth target has a second channel that character draws
 set to 1, and the MSAA resolve averages it into soft edges. A draw is hers
 when its WORLD matrix is one of her 32 bones (a rigid piece) or one of the
 palettes 0x000636D0 built this frame from her bones (`0x00B25840`, which
-0x0017D670 loads as WORLD0..WORLD3); props, furniture and the ball are not. The effects pass
+0x0017D670 loads as WORLD0..WORLD3); props, furniture and the ball are not.
+The shot is taken from the frame after it is asked for, which draws only the
+characters over a clear picture and is saved, not shown; a draw blended by
+its alpha (hair tips) blends the mask by that alpha too, and the saved colour
+is divided by the alpha, so the scene never shows through her hair. The effects pass
 writes it as the frame's alpha and the PNG keeps it (RGBA). Beside it,
 `...-depth.png` is the view depth as grey, white near and black far,
-logarithmic out to 100 units. Colours at the edges are still mixed with what
-was behind.
+logarithmic out to 100 units.
 
 A camera path plays through its keyframes along a Catmull-Rom curve
 (`camera_path.c`): position, heading the short way round, pitch, field of
