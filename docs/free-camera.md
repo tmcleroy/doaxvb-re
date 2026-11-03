@@ -324,6 +324,7 @@ the sticks, WASD and the right mouse button still fly.
 
 | Setting | Values |
 |---|---|
+| Reset all camera options | Right, left or A puts every setting back, the field of view too (spots and the path stay) |
 | Depth of field | Off / On |
 | Focus | On her (the character nearest the middle of the picture), Centre of frame, Manual |
 | Focus distance | Shown for "On her"; changing it switches to Manual, 5% a step |
@@ -393,8 +394,10 @@ view depth there is far, so a palm or a girl in front hides it.
 
 A transparent screenshot keeps only the characters: with the free camera
 setting on, the view-depth target has a second channel that character draws
-(skinned joints and lit pieces no larger than a limb, the ball among them)
-set to 1, and the MSAA resolve averages it into soft edges. The effects pass
+set to 1, and the MSAA resolve averages it into soft edges. A draw is hers
+when its WORLD matrix is one of her 32 bones (a rigid piece) or one of the
+palettes 0x000636D0 built this frame from her bones (`0x00B25840`, which
+0x0017D670 loads as WORLD0..WORLD3); props, furniture and the ball are not. The effects pass
 writes it as the frame's alpha and the PNG keeps it (RGBA). Beside it,
 `...-depth.png` is the view depth as grey, white near and black far,
 logarithmic out to 100 units. Colours at the edges are still mixed with what
@@ -423,9 +426,10 @@ passes blend (`game_display.c`): the ball's position and spin, each
 character's place, heading and three bone banks, the scene lights, the boats
 and the foliage's sway. Bones blend as rigid turns. A character who moves
 more than half a unit in a frame, or comes or goes, or the ball more than
-two, is not slid. A frozen frame still runs 0x000AF380, which skips the
-skeleton build but derives the joint banks (0x000AE350, 0x000AE3F0) from the
-blended bones, so joints follow. The step itself runs unseen
+two, is not slid. Joints are drawn with a second bank, each bone's inverse
+(0x004D72F0 + n * 0x800), which 0x000AE3F0 derives only as the scene runs;
+each blended bone's inverse is written there too, or limbs come apart at the
+joints. The step itself runs unseen
 (`recomp_game_hide_pass`): its backbuffer draws are skipped and its Swap
 neither presents nor waits for the display, as a hidden high-refresh tick's
 does, so it costs no frame on screen. Everything blended is game state, so

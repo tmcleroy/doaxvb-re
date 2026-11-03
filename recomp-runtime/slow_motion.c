@@ -5,6 +5,7 @@
 #include "game_display.h"
 #include "runtime.h"
 
+#include <math.h>
 #include <string.h>
 
 /* Smooth slow motion. In slow motion the free camera steps a frozen scene
@@ -19,13 +20,13 @@
    who moved more than half a unit in a frame, or came or went, or the ball
    more than two, is shown where she is now, not slid there.
 
-   A frozen scene still runs 0x000AF380 each frame, which skips the skeleton
-   build (actor_pose_adapter.c) but derives the joint banks from the bones
-   (0x000AE350 and 0x000AE3F0), so joints follow each blend.
+   Joints are drawn with a second bank, each bone's inverse (0x004D72F0 + n *
+   0x800), which 0x000AE3F0 derives only as the scene runs: a blended bone's
+   inverse is worked out here, or her limbs come apart at the joints.
 
    Everything blended is game state the next step starts from, so the
    newest sample is put back exactly before the scene runs on. */
-enum { FLOATS, ANGLES, WORDS, MATRIX, MAX_SAMPLES = 4096 };
+enum { FLOATS, ANGLES, WORDS, MATRIX, INVERSE, MAX_SAMPLES = 4096 };
 
 typedef struct Sample {
     uint32_t address, kind, count;
@@ -81,6 +82,7 @@ void recomp_slow_motion_commit(bool continuous)
         sample(0x004d7004u + actor * 0xbcu, 1u, ANGLES);
         for (unsigned bone = 0u; bone < 32u; ++bone) {
             sample(0x004d3650u + actor * 0x800u + bone * 64u, 16u, MATRIX);
+            sample(0x004d72f0u + actor * 0x800u + bone * 64u, 16u, INVERSE);
             sample(0x004d5700u + actor * 0x400u + bone * 32u, 8u, FLOATS);
             sample(0x004d6700u + actor * 0x200u + bone * 16u, 4u, FLOATS);
         }
@@ -130,8 +132,36 @@ void recomp_slow_motion_commit(bool continuous)
     motion.count = motion.cursor;
 }
 
+/* The inverse of a bone's world matrix (rows: three axes, then the place). */
+static bool invert(const float m[16], float out[16])
+{
+    const float a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const float A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
+    const float det = a * A + b * B + c * C;
+    if (!(fabsf(det) > 1e-12f)) return false;
+    const float k = 1.0f / det;
+    const float r[9] = {A * k, (c * h - b * i) * k, (b * f - c * e) * k,
+                        B * k, (a * i - c * g) * k, (c * d - a * f) * k,
+                        C * k, (b * g - a * h) * k, (a * e - b * d) * k};
+    for (unsigned row = 0u; row < 3u; ++row) {
+        for (unsigned col = 0u; col < 3u; ++col) out[row * 4u + col] = r[row * 3u + col];
+        out[row * 4u + 3u] = 0.0f;
+    }
+    for (unsigned col = 0u; col < 3u; ++col)
+        out[12u + col] = -(m[12] * r[col] + m[13] * r[3u + col] + m[14] * r[6u + col]);
+    out[15] = 1.0f;
+    return true;
+}
+
+/* The bone matrix last written, which the inverse after it follows. */
+static float written_bone[16];
+
 static void blend(const Sample *s, float alpha, uint32_t out[16])
 {
+    if (s->kind == INVERSE) {
+        if (alpha >= 1.0f || !invert(written_bone, (float *)out)) memcpy(out, s->after, s->count * 4u);
+        return;
+    }
     if (alpha >= 1.0f || memcmp(s->before, s->after, s->count * 4u) == 0) {
         memcpy(out, s->after, s->count * 4u);
         return;
@@ -169,6 +199,7 @@ static void write(float alpha, uint32_t skip)
         const Sample *s = motion.samples + n;
         uint32_t out[16];
         blend(s, alpha, out);
+        if (s->kind == MATRIX) memcpy(written_bone, out, sizeof written_bone);
         recomp_guest_store(s->address, out, s->count * 4u);
     }
 }

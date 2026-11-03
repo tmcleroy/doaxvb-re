@@ -169,6 +169,9 @@ static struct {
     /* The camera settings list (Tab or BACK alone). */
     bool settings_open, settings_key_held, back_held, back_combo, settings_ready;
     int setting_row;
+    bool reset_row_held;
+    /* The field of view the camera started with, for a reset. */
+    float start_fov;
     HeldRepeat row_repeat, value_repeat;
     RecompCameraSettings settings;
     /* How far ahead of the camera the chosen character is; zero for none. */
@@ -315,6 +318,7 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
     if (!enabled()) return;
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
     recomp_scene_freeze_set_run_hook(scene_runs);
+    recomp_d3d_draw_set_character_test(recomp_actor_pose_character_world);
     recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
     recomp_d3d_draw_set_view_observer(draw_viewed);
     recomp_screenshot_set_interceptor(intercept_screenshot);
@@ -406,6 +410,15 @@ static void use_spot(unsigned spot, bool save)
     }
 }
 
+/* Every camera setting back as it starts, the field of view too. Camera
+   spots and the path are views, not settings: they stay. */
+static void reset_settings(void)
+{
+    recomp_camera_settings_default(&state.settings);
+    if (state.started && state.start_fov > 0.0f) state.camera.fov = state.start_fov;
+    fprintf(stderr, "recomp free camera: settings reset\n");
+}
+
 /* Tab, or BACK let go without another button (BACK with A is a screenshot),
    opens and closes the settings; while open, up and down pick a row and
    left and right change it, held to keep going. */
@@ -453,12 +466,18 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         } else if (steps < 0) {
             state.playing = false;
         }
+    } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_RESET) {
+        reset_settings();
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE) {
         step_pose(steps > 0 ? 1 : -1);
     } else if (steps != 0) {
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
     }
+    const bool reset = state.setting_row == RECOMP_CAMERA_SETTING_RESET &&
+        gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
+    if (reset && !state.reset_row_held) reset_settings();
+    state.reset_row_held = reset;
     /* On the Camera spot row, A goes to the spot and X saves the view there. */
     const bool spot_row = state.setting_row == RECOMP_CAMERA_SETTING_SPOT;
     const bool go = spot_row && gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
@@ -847,6 +866,7 @@ static void build_camera(void)
         } else if ((!state.started || resetting) &&
             recomp_free_camera_begin(&state.camera, eye, target, fov)) {
             state.started = true;
+            state.start_fov = state.camera.fov;
             state.stepped_frame = frame;
             state.stepped_seconds = seconds_now();
         }

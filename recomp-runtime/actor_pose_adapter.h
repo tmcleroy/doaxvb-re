@@ -33,6 +33,9 @@ void recomp_actor_pose_status(RecompActorPoseStatus *status);
 void recomp_actor_pose_name(uint32_t actor, char *name, uint32_t size);
 /* Chooses a character to pose by number. */
 void recomp_actor_pose_choose(uint32_t actor);
+/* Whether a draw's WORLD matrix is one of the palettes built this frame
+   from a character's bones: true only for the characters' own pieces. */
+bool recomp_actor_pose_character_world(const float world[16]);
 /* Characters whose bit is set are moved far below the ground. */
 void recomp_actor_pose_set_hidden(uint32_t mask);
 /* Where the chosen character's hips are, for the camera to face. */

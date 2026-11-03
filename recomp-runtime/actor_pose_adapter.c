@@ -68,6 +68,10 @@ enum {
     ROOT_STRIDE = 0xBCu,
     ROOT_POSITION = 0x08u,
     BUILD_SKELETON = 0x000B01E0u,
+    BUILD_PALETTE = 0x000636D0u,
+    /* The draw palette 0x000636D0 builds: up to four world matrices. */
+    PALETTE = 0x00B25840u,
+    PALETTES_KEPT = 32u,
     BONE_FIRST = 0x004D3650u,
     BONE_STRIDE = 0x800u,
     BONE_COUNT = 32u,
@@ -85,6 +89,7 @@ enum {
 static const float HIDE_DEPTH = 100.0f;
 
 void sub_000B01E0(void);
+void sub_000636D0(void);
 
 static struct {
     uint32_t actor;
@@ -253,8 +258,53 @@ static void build_skeleton_inner(void)
     }
 }
 
+/* Each draw of a character is preceded by 0x000636D0 building its palette
+   (0x00B25840) from her bones (the bank in [ESP+4]), which 0x0017D670 then
+   loads as WORLD0..WORLD3. A frame's palettes from character banks are kept,
+   so a draw can be told for hers by its WORLD matrix; scenery and props are
+   drawn from palettes of their own, or none. */
+static struct {
+    uint32_t frame;
+    unsigned count;
+    float matrices[PALETTES_KEPT][4][16];
+} palettes;
+
+static void build_palette(void)
+{
+    const uint32_t bank = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    RecompFunction observed = recomp_animation_probe_lookup_manual(BUILD_PALETTE);
+    if (observed != NULL) observed();
+    else sub_000636D0();
+    const uint32_t offset = bank - BONE_FIRST;
+    if (bank < BONE_FIRST || offset % BONE_STRIDE != 0u || offset / BONE_STRIDE >= ACTOR_COUNT) return;
+    const uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
+    if (palettes.frame != frame) {
+        palettes.frame = frame;
+        palettes.count = 0u;
+    }
+    if (palettes.count == PALETTES_KEPT) return;
+    recomp_guest_load(palettes.matrices[palettes.count++], PALETTE, sizeof palettes.matrices[0]);
+}
+
+bool recomp_actor_pose_character_world(const float world[16])
+{
+    if (palettes.frame == recomp_d3d_frame_adapter_swap_counter())
+        for (unsigned p = 0u; p < palettes.count; ++p)
+            for (unsigned m = 0u; m < 4u; ++m)
+                if (memcmp(palettes.matrices[p][m], world, sizeof palettes.matrices[p][m]) == 0) return true;
+    /* Rigid pieces are drawn at a bone itself. */
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
+        if (!active(actor)) continue;
+        const uint8_t *bones = recomp_memory(bone_of(actor, 0u), BONE_COUNT * BONE_SIZE);
+        for (unsigned bone = 0u; bone < BONE_COUNT; ++bone)
+            if (memcmp(bones + bone * BONE_SIZE, world, 64u) == 0) return true;
+    }
+    return false;
+}
+
 RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)
 {
+    if (guest_address == BUILD_PALETTE) return build_palette;
     return guest_address == BUILD_SKELETON ? build_skeleton : NULL;
 }
 
@@ -495,6 +545,12 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+bool recomp_actor_pose_character_world(const float world[16])
+{
+    (void)world;
+    return false;
+}
+
 void recomp_actor_pose_set_look(bool on, bool eyes, const float eye[3])
 {
     (void)on;

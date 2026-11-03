@@ -122,6 +122,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Additional world-view-projection matrices for 1..3 explicit weights. */
     float blend_transforms[3][16];
     uint32_t blend_weight_count;
+    /* A piece of a character (recomp_actor_pose_character_world). */
+    bool character;
     /* Scene camera inputs: WORLD0..WORLD[blend_weight_count] and VIEW * PROJECTION. */
     float world[4][16];
     float view_projection[16];

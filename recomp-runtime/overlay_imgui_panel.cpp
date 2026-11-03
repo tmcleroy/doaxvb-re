@@ -3,6 +3,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -70,6 +71,31 @@ static void draw_grid(const RecompOverlayText &text, float width, float height)
     }
 }
 
+/* A line "Label: value" shows its label muted (gold on the chosen row,
+   which starts with '>') and its value bright and heavier: the font has no
+   bold, so the value is drawn twice, a pixel apart. */
+static void draw_line(const char *line, float scale)
+{
+    const char *colon = std::strstr(line, ": ");
+    if (colon == nullptr) {
+        ImGui::TextUnformatted(line);
+        return;
+    }
+    const bool chosen = line[0] == '>';
+    const ImVec4 label = chosen ? ImVec4(1.0f, 0.86f, 0.35f, 1.0f) : ImVec4(0.62f, 0.72f, 0.82f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, label);
+    ImGui::TextUnformatted(line, colon + 1);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, ImGui::CalcTextSize(" ").x);
+    const char *value = colon + 2;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + std::max(1.0f, 0.75f * scale), at.y),
+        IM_COL32(255, 255, 255, 255), value);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::TextUnformatted(value);
+    ImGui::PopStyleColor();
+}
+
 void recomp_overlay_imgui_build(const RecompOverlayText &text, float width, float height)
 {
     if (text.grid != 0u) draw_grid(text, width, height);
@@ -84,7 +110,7 @@ void recomp_overlay_imgui_build(const RecompOverlayText &text, float width, floa
         if (text.title[0] != '\0') {
             ImGui::TextColored(ImVec4(1.0f, 0.86f, 0.35f, 1.0f), "%s", text.title);
         }
-        for (unsigned i = 0u; i < text.count; ++i) ImGui::TextUnformatted(text.line[i]);
+        for (unsigned i = 0u; i < text.count; ++i) draw_line(text.line[i], scale);
         ImGui::End();
     }
     if (text.hint[0] != '\0') {

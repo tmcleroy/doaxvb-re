@@ -3245,28 +3245,6 @@ bool effectsCreate(RecompD3dPresenter *presenter)
 
 /* A character piece: a skinned joint, or a lit rigid piece no larger than a
    limb (sampled through its indices, in world space). */
-bool effectsCharacterPiece(const RecompD3dPresenterDrawCommand &draw)
-{
-    if (draw.blend_weight_count) return true;
-    if (!draw.directional.enabled || !draw.index_count || draw.vertex_stride < 12u) return false;
-    const uint32_t samples = std::min(draw.index_count, 24u);
-    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
-    float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
-    for (uint32_t k = 0; k < samples; ++k) {
-        const uint32_t v = indices[k * draw.index_count / samples];
-        if (v >= draw.vertex_count) return false;
-        float p[3];
-        std::memcpy(p, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride, sizeof p);
-        const float *m = draw.world[0];
-        for (unsigned a = 0; a < 3; ++a) {
-            const float w = p[0] * m[a] + p[1] * m[4 + a] + p[2] * m[8 + a] + m[12 + a];
-            low[a] = std::min(low[a], w);
-            high[a] = std::max(high[a], w);
-        }
-    }
-    return std::max({high[0] - low[0], high[1] - low[1], high[2] - low[2]}) <= 1.2f;
-}
-
 /* Characters are drawn as skinned joints and lit rigid pieces, one per limb.
    Each candidate's sampled vertices give its middle on screen and its view
    depth; the one nearest the picture's middle is the subject. */
@@ -4479,8 +4457,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // backgrounds before them take it; lit scenery, such as the sea, keeps its
         // relit lights and tints only its own glow, and characters only relight.
         // Characters are marked (scene_tint.w 2) for transparent screenshots.
-        const bool character = presenter->effects.enabled && is_main && !layout.pretransformed &&
-            !draw.program_count && effectsCharacterPiece(draw);
+        const bool character = presenter->effects.enabled && is_main && draw.character;
         if (character) {
             constants[147] = 2.0f;
         } else if (presenter->effects.tint && is_main) {

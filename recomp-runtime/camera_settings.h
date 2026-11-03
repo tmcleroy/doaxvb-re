@@ -14,6 +14,8 @@ extern "C" {
    per setting, each moved through with left and right. Plain data and rules
    only; free_camera_adapter.c reads the keys and draws the list. */
 typedef enum RecompCameraSettingRow {
+    /* Left, right or A puts every setting back (the free camera does it). */
+    RECOMP_CAMERA_SETTING_RESET,
     RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD,
     RECOMP_CAMERA_SETTING_FOCUS,
     RECOMP_CAMERA_SETTING_FOCUS_DISTANCE,

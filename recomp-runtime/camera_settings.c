@@ -155,6 +155,9 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
 {
     static const char *const focus_names[RECOMP_CAMERA_FOCUS_COUNT] = {"On her", "Centre of frame", "Manual"};
     switch (row) {
+    case RECOMP_CAMERA_SETTING_RESET:
+        snprintf(text, size, "Reset all camera options: press right");
+        break;
     case RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD:
         snprintf(text, size, "Depth of field: %s", settings->depth_of_field ? "On" : "Off");
         break;

@@ -342,6 +342,13 @@ slot_trace_done:
 /* Xbox blend modes 1/3/5 consume 1/2/3 explicit weights and the
    remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
    records the world and view-projection matrices for host ray tracing. */
+static RecompD3dDrawCharacterTest character_test;
+
+void recomp_d3d_draw_set_character_test(RecompD3dDrawCharacterTest test)
+{
+    character_test = test;
+}
+
 static bool compose_blend_transforms(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dVertexLayout layout;
@@ -2169,6 +2176,7 @@ static void recomp_d3d_draw_indexed_vertices_adapter(void)
         decline = "transform";
         goto finished;
     }
+    command.data.draw.character = character_test != NULL && character_test(command.data.draw.world[0]);
     if (!attach_draw_state(device, &command.data.draw)) {
         decline = "render-target";
         goto finished;

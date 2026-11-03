@@ -28,6 +28,10 @@ uint32_t recomp_d3d_draw_adapter_declined(void);
 /* Called with the view transform of each indexed draw submitted, so a
    caller can tell which camera the scene is drawn with; NULL stops it. */
 typedef void (*RecompD3dDrawViewObserver)(const float view[16]);
+/* Tells a character's draws by their WORLD matrix (the free camera's
+   recomp_actor_pose_character_world); each draw command carries the answer. */
+typedef bool (*RecompD3dDrawCharacterTest)(const float world[16]);
+void recomp_d3d_draw_set_character_test(RecompD3dDrawCharacterTest test);
 void recomp_d3d_draw_set_view_observer(RecompD3dDrawViewObserver observer);
 /* When the device's view transform is `old_view`, puts `view` and
    `projection` in its place, as D3DDevice_SetTransform would. True when it
