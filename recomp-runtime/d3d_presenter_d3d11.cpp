@@ -607,6 +607,8 @@ struct RecompD3dPresenter {
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
     bool gamma_enabled = false;
+    // 16x anisotropic filtering on mipmapped scene textures; RECOMP_D3D_ANISOTROPY=0 turns it off.
+    bool anisotropy = true;
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
     ID3D11VertexShader *target_copy_vs = nullptr;
@@ -3425,7 +3427,7 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
-    const bool anisotropic = draw.linear_mip_filter && draw.has_texture &&
+    const bool anisotropic = presenter->anisotropy && draw.linear_mip_filter && draw.has_texture &&
         draw.texture.mip_levels > 1u &&
         !layout.pretransformed && !draw.texture.linear &&
         !draw.texture.render_target && !draw.texture_is_backbuffer &&
@@ -4795,6 +4797,8 @@ RecompD3dPresenterError d3d11_backend_create(
     created->widescreen = widescreen == nullptr || std::strcmp(widescreen, "0") != 0;
     const char *performance = std::getenv("RECOMP_PERF_COUNTER");
     created->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
+    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY"))
+        created->anisotropy = std::strcmp(anisotropy, "0") != 0;
     if (const char *scale = std::getenv("RECOMP_D3D_SCALE")) {
         const float value = static_cast<float>(std::atof(scale));
         if (std::isfinite(value)) created->scale = std::clamp(value, 1.0f, 8.0f);
@@ -4805,10 +4809,11 @@ RecompD3dPresenterError d3d11_backend_create(
     created->sun.enabled = sunShadowRequested();
     created->gbuffer.enabled = gbufferRequested();
     {
-        // The free camera's view depth rides on the draw shaders (d3d_presenter_d3d11_camera.h).
+        // The free camera's view depth rides on the draw shaders (d3d_presenter_d3d11_camera.h);
+        // the launcher's ambient occlusion needs it too.
         const char *free_camera = std::getenv("RECOMP_FREE_CAMERA");
-        g_d3d11_camera_depth = free_camera != nullptr && free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0 &&
-            !created->gbuffer.enabled;
+        g_d3d11_camera_depth = ((free_camera != nullptr && free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0) ||
+            recomp_camera_effects_always_wanted()) && !created->gbuffer.enabled;
     }
     if (created->gbuffer.enabled) {
         const char *view = std::getenv("RECOMP_D3D_GBUFFER_VIEW");

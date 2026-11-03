@@ -82,7 +82,16 @@ void recomp_camera_effects_adjust_matrix(const RecompCameraEffects *effects, flo
 #define RECOMP_CAMERA_FOCUS_SUBJECT (-1.0f)
 
 void recomp_camera_effects_publish(const RecompCameraEffects *effects);
+/* The latest effects, with the launcher's always-on ones (below) added. */
 void recomp_camera_effects_take(RecompCameraEffects *effects);
+/* Graphics options the launcher sets that use the same effects pass in
+   every scene, free camera or not: RECOMP_D3D_OCCLUSION (ambient
+   occlusion) and RECOMP_D3D_BLOOM (bloom and sun glare), each 0 to 1. While
+   the camera flies, the stronger of these and its own rows is used. */
+void recomp_camera_effects_always(float *occlusion, float *bloom);
+bool recomp_camera_effects_always_wanted(void);
+/* Effects that change nothing: no filter, the stage's own hour and light. */
+void recomp_camera_effects_neutral(RecompCameraEffects *effects);
 /* The presenter reports how far ahead the character nearest the middle of
    the last frame was (zero for none), for the free camera to show. */
 void recomp_camera_effects_report_subject(float depth);

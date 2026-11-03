@@ -1,6 +1,7 @@
 #include "camera_effects.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -112,12 +113,69 @@ void recomp_camera_effects_publish(const RecompCameraEffects *effects)
     unlock();
 }
 
+/* A launcher amount, 0 to 1 (a missing or unreadable one is 0). */
+static float launcher_amount(const char *name)
+{
+    const char *text = getenv(name);
+    const float value = text != NULL ? strtof(text, NULL) : 0.0f;
+    return value > 0.0f ? (value < 1.0f ? value : 1.0f) : 0.0f;
+}
+
+void recomp_camera_effects_always(float *occlusion, float *bloom)
+{
+    /* Read once: the environment is set before the runner starts. */
+    static int read;
+    static float kept_occlusion, kept_bloom;
+    if (!read) {
+        kept_occlusion = launcher_amount("RECOMP_D3D_OCCLUSION");
+        kept_bloom = launcher_amount("RECOMP_D3D_BLOOM");
+        read = 1;
+    }
+    if (occlusion != NULL) *occlusion = kept_occlusion;
+    if (bloom != NULL) *bloom = kept_bloom;
+}
+
+bool recomp_camera_effects_always_wanted(void)
+{
+    float occlusion, bloom;
+    recomp_camera_effects_always(&occlusion, &bloom);
+    return occlusion > 0.0f || bloom > 0.0f;
+}
+
+void recomp_camera_effects_neutral(RecompCameraEffects *effects)
+{
+    if (effects == NULL) return;
+    memset(effects, 0, sizeof *effects);
+    effects->aperture = 2.8f;
+    effects->hour = -1.0f;
+    effects->light_strength = 1.0f;
+    effects->saturation = 1.0f;
+}
+
 void recomp_camera_effects_take(RecompCameraEffects *effects)
 {
     if (effects == NULL) return;
     lock();
     *effects = published;
     unlock();
+    /* The launcher's own: in every scene, and while the camera flies the
+       stronger of its value and the camera's. */
+    float occlusion, bloom;
+    recomp_camera_effects_always(&occlusion, &bloom);
+    if (!(occlusion > 0.0f || bloom > 0.0f)) return;
+    if (!effects->active) {
+        /* The camera's look is not shown: only its lens, light, background
+           and recording settings stay, which others read. */
+        effects->depth_of_field = false;
+        effects->filter = RECOMP_CAMERA_FILTER_NONE;
+        effects->vignette = effects->grain = effects->letterbox = 0.0f;
+        effects->exposure = effects->contrast = 0.0f;
+        effects->saturation = 1.0f;
+        effects->bloom = effects->occlusion = 0.0f;
+    }
+    if (occlusion > effects->occlusion) effects->occlusion = occlusion;
+    if (bloom > effects->bloom) effects->bloom = bloom;
+    effects->active = true;
 }
 
 static float subject;

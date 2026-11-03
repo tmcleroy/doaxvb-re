@@ -535,7 +535,10 @@ struct RecompD3dPresenter {
     SDL_GPUSampler *point_sampler = nullptr;
     SDL_GPUSampler *filter_sampler = nullptr;
     SDL_GPUSampler *program_mask_sampler = nullptr;
-    SDL_GPUSampler *address_samplers[6][6]{}; // [address_u][address_v]
+    SDL_GPUSampler *address_samplers[2][6][6]{}; // [anisotropic][address_u][address_v]
+    // 16x anisotropic filtering on mipmapped scene textures, as D3D11 draws them;
+    // RECOMP_D3D_ANISOTROPY=0 turns it off.
+    bool anisotropy = true;
 
     // Persistent dynamic ring buffers
     SDL_GPUBuffer *draw_vertex_buffer = nullptr;
@@ -610,6 +613,7 @@ struct RecompD3dPresenter {
         // The sun's direction and the scene camera, from a lit scenery draw, for glare.
         bool sun_seen = false;
         float sun_dir[3] = {}, sun_camera[16] = {};
+        float scene_fov = 0.0f;
         // Time of day's tint for the baked scene, taken at each present for the next frame.
         bool tint = false;
         float tint_rgb[3] = {1.0f, 1.0f, 1.0f};
@@ -835,13 +839,13 @@ SDL_GPUTexture *lookupDepthTarget(
     return new_dt;
 }
 
-SDL_GPUSampler *lookupDrawSampler(RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+SDL_GPUSampler *lookupDrawSampler(RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v,
+    bool anisotropic = false)
 {
     uint32_t u = address_u <= 5u ? address_u : 1u;
     uint32_t v = address_v <= 5u ? address_v : 1u;
-    if (presenter->address_samplers[u][v] != nullptr) {
-        return presenter->address_samplers[u][v];
-    }
+    SDL_GPUSampler *&sampler = presenter->address_samplers[anisotropic ? 1 : 0][u][v];
+    if (sampler != nullptr) return sampler;
 
     SDL_GPUSamplerCreateInfo desc{};
     desc.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -850,10 +854,11 @@ SDL_GPUSampler *lookupDrawSampler(RecompD3dPresenter *presenter, uint32_t addres
     desc.address_mode_u = hostAddressMode(u);
     desc.address_mode_v = hostAddressMode(v);
     desc.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    desc.enable_anisotropy = false;
+    desc.enable_anisotropy = anisotropic;
+    desc.max_anisotropy = anisotropic ? 16.0f : 1.0f;
     desc.max_lod = 1000.0f;  // the zero default would sample only the base mip level
-    presenter->address_samplers[u][v] = SDL_CreateGPUSampler(presenter->device, &desc);
-    return presenter->address_samplers[u][v] ? presenter->address_samplers[u][v] : presenter->filter_sampler;
+    sampler = SDL_CreateGPUSampler(presenter->device, &desc);
+    return sampler ? sampler : presenter->filter_sampler;
 }
 
 bool ensureDynamicBuffers(RecompD3dPresenter *presenter, uint32_t req_vbytes, uint32_t req_ibytes)
@@ -3140,6 +3145,7 @@ void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterD
 {
     auto &e = presenter->effects;
     recomp_effects::observeDraw(draw, e.sun_seen, e.sun_dir, e.sun_camera, e.subject_offset, e.subject_depth);
+    recomp_effects::sceneFov(draw, e.scene_fov);
 }
 
 float p_big_ratio(const RecompD3dPresenter *presenter)
@@ -3178,6 +3184,7 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     frame.bigger = p_big_ratio(presenter);
     frame.depth_drawn = e.depth_drawn;
     frame.sun_seen = e.sun_seen;
+    frame.fov = e.scene_fov;
     std::memcpy(frame.sun_dir, e.sun_dir, sizeof frame.sun_dir);
     std::memcpy(frame.sun_camera, e.sun_camera, sizeof frame.sun_camera);
     frame.frame = ++e.frame;
@@ -4042,11 +4049,14 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
 
     std::fprintf(stderr, "[presenter] initialized scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
         scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
+    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) p->anisotropy = std::strcmp(anisotropy, "0") != 0;
     // Before the boot shaders: whether shadows are on decides their sun block.
     if (sunShadowRequested()) sunCreate(p);
-    // Camera effects come with the free camera.
-    if (const char *free_camera = std::getenv("RECOMP_FREE_CAMERA"))
-        if (free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0) effectsCreate(p);
+    // Camera effects come with the free camera, or the launcher's always-on ones.
+    const char *free_camera = std::getenv("RECOMP_FREE_CAMERA");
+    if ((free_camera != nullptr && free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0) ||
+        recomp_camera_effects_always_wanted())
+        effectsCreate(p);
 
     try {
         p->precompile_thread = std::thread(precompileBootShaders, p);
@@ -4433,9 +4443,16 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             return RECOMP_D3D_PRESENTER_OK;
         }
 
+        // As D3D11 chooses: mipmapped scene textures, not frames, render
+        // targets, palettes or reflections.
+        const bool anisotropic = presenter->anisotropy && draw.linear_mip_filter && draw.has_texture &&
+            draw.texture.mip_levels > 1u && !layout.pretransformed && !draw.texture.linear &&
+            !draw.texture.render_target && !draw.texture_is_backbuffer &&
+            draw.texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+            !draw.has_reflection && findRenderTarget(presenter, draw.texture) == nullptr;
         SDL_GPUSampler *s0 = (draw.four_tap_filter || draw.has_alpha_mask || draw.program_count)
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v);
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v, anisotropic);
         // Like D3D11, the reflection environment map uses the draw's own sampler. GLSL binds
         // one sampler per texture, so slot 1 carries it.
         SDL_GPUSampler *s1 = draw.program_alpha_mask ? presenter->program_mask_sampler
@@ -4732,11 +4749,13 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     p->draw_index_used = 0u;
 
     // Release samplers
-    for (auto &row : p->address_samplers) {
-        for (auto &s : row) {
-            if (s) {
-                SDL_ReleaseGPUSampler(p->device, s);
-                s = nullptr;
+    for (auto &kind : p->address_samplers) {
+        for (auto &row : kind) {
+            for (auto &s : row) {
+                if (s) {
+                    SDL_ReleaseGPUSampler(p->device, s);
+                    s = nullptr;
+                }
             }
         }
     }

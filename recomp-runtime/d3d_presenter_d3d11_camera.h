@@ -112,6 +112,7 @@ struct D3d11CameraEffects {
     // The subject and the sun, seen in this frame's draws.
     bool sun_seen = false;
     float sun_dir[3] = {}, sun_camera[16] = {};
+    float scene_fov = 0.0f;
     float subject_offset = 0.0f, subject_depth = 0.0f;
     // Time of day's tint for what the game does not light (the baked stage
     // and the sky), taken at each present; a 3D draw since the present.
@@ -399,6 +400,7 @@ struct D3d11CameraEffects {
             frame.bigger = bigger;
             frame.depth_drawn = depth_ready;
             frame.sun_seen = sun;
+            frame.fov = scene_fov;
             std::memcpy(frame.sun_dir, sun_dir, sizeof frame.sun_dir);
             std::memcpy(frame.sun_camera, sun_camera, sizeof frame.sun_camera);
             frame.frame = ++this->frame;
@@ -563,6 +565,7 @@ struct D3d11CameraEffects {
     {
         if (!draw.target.offscreen)
             recomp_effects::observeDraw(draw, sun_seen, sun_dir, sun_camera, subject_offset, subject_depth);
+        recomp_effects::sceneFov(draw, scene_fov);
     }
 
     // Transparent screenshots can be drawn here: the view depth is.

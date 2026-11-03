@@ -233,6 +233,9 @@ struct EffectsFrame {
     /* The sun's direction and the scene camera it was seen through. */
     bool sun_seen = false;
     float sun_dir[3] = {}, sun_camera[16] = {};
+    /* The scene camera's vertical field of view in radians (sceneFov), for
+       effects that run without the free camera; 0 when not seen. */
+    float fov = 0.0f;
     unsigned frame = 0;
 };
 
@@ -250,9 +253,10 @@ inline EffectsUniforms effectsUniforms(const RecompCameraEffects &settings, cons
     u.taps[1] = settings.transparent ? 1.0f : 0.0f;
     u.dof[0] = settings.depth_of_field && frame.depth_drawn ? 1.0f : 0.0f;
     // Ambient occlusion reaches a quarter unit: that many pixels at 1 unit.
-    if (settings.occlusion > 0.0f && frame.depth_drawn && settings.fov > 0.0f) {
+    const float fov = settings.fov > 0.0f ? settings.fov : frame.fov;
+    if (settings.occlusion > 0.0f && frame.depth_drawn && fov > 0.0f) {
         u.taps[2] = settings.occlusion;
-        u.taps[3] = 0.25f * height / (2.0f * std::tan(0.5f * settings.fov));
+        u.taps[3] = 0.25f * height / (2.0f * std::tan(0.5f * fov));
     }
     // An automatic focus scales the blur as if focused at 2.5 units.
     u.dof[1] = recomp_camera_effects_blur_scale(&settings, focus > 0.0f ? focus : 2.5f, height);
@@ -293,6 +297,21 @@ inline EffectsUniforms effectsUniforms(const RecompCameraEffects &settings, cons
    middle is nearest the middle of the picture gives its view depth. Each
    piece's middle is the average of up to 24 of the vertices its indices use,
    through the same per-bone transforms the vertex shader blends. */
+/* The vertical field of view of a 3D draw's camera, from its view-projection
+   (row vectors): the view only turns and moves, so the y column's length over
+   the w column's is the projection's cot(fov / 2). Left alone for a draw
+   without one (2D, or a projection it does not fit). */
+inline void sceneFov(const RecompD3dPresenterDrawCommand &draw, float &fov)
+{
+    if (draw.target.offscreen || !draw.has_transform) return;
+    const float *m = draw.view_projection;
+    const float y = std::sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+    const float w = std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]);
+    if (!(w > 1e-6f) || !std::isfinite(y)) return;
+    const float cot = y / w;
+    if (cot > 0.2f && cot < 20.0f) fov = 2.0f * std::atan(1.0f / cot);
+}
+
 inline void observeDraw(const RecompD3dPresenterDrawCommand &draw, bool &sun_seen, float sun_dir[3],
     float sun_camera[16], float &subject_offset, float &subject_depth)
 {
