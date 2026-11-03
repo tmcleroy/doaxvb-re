@@ -7,6 +7,7 @@
 #include "d3d_vertex_program.h"
 #include "camera_effects.h"
 #include "camera_effects_shader.h"
+#include "video_sound.h"
 
 #include <SDL3/SDL.h>
 
@@ -657,6 +658,9 @@ struct RecompD3dPresenter {
         SDL_GPUFence *fences[3] = {};
         unsigned next = 0, frames = 0;
         bool failed = false, warned = false;
+        // Its sound (video_sound.h), and the ffmpeg that adds it.
+        VideoSound sound;
+        std::string ffmpeg;
     } recording;
 };
 
@@ -3226,6 +3230,7 @@ void recordingWrite(RecompD3dPresenter *p, unsigned slot)
             r.failed = true;
         SDL_UnmapGPUTransferBuffer(p->device, r.buffers[slot]);
         ++r.frames;
+        r.sound.frame();
     }
 }
 
@@ -3237,9 +3242,11 @@ void recordingStop(RecompD3dPresenter *p)
     for (auto &buffer : r.buffers)
         if (buffer) SDL_ReleaseGPUTransferBuffer(p->device, buffer);
     const int status = r.pipe ? pclose(r.pipe) : -1;
-    std::fprintf(stderr, status == 0 && !r.failed ? "recomp video: saved %s (%u frames)\n"
-                                                  : "recomp video: %s failed after %u frames\n",
-        r.path.c_str(), r.frames);
+    const bool saved = status == 0 && !r.failed;
+    const bool sound = r.sound.finish(r.ffmpeg, r.path, saved);
+    std::fprintf(stderr, saved ? "recomp video: saved %s (%u frames%s)\n"
+                               : "recomp video: %s failed after %u frames%s\n",
+        r.path.c_str(), r.frames, sound ? ", with sound" : "");
     r = {};
 }
 
@@ -3275,6 +3282,8 @@ bool recordingStart(RecompD3dPresenter *p)
         std::to_string(r.width) + "x" + std::to_string(r.height) + " -r 60 -i - -c:v libx264 -preset veryfast "
         "-crf 18 -pix_fmt yuv420p " + shellQuoted(r.path);
     r.pipe = popen(command.c_str(), "w");
+    r.ffmpeg = ffmpeg;
+    if (r.pipe) r.sound.start(r.path);
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, r.width * r.height * 4u, 0};
     for (auto &buffer : r.buffers) buffer = SDL_CreateGPUTransferBuffer(p->device, &info);
     if (!r.pipe || !r.buffers[0] || !r.buffers[1] || !r.buffers[2]) {

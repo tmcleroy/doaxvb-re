@@ -1,15 +1,18 @@
 #include "audio_output.h"
+#include "audio_capture.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
 #include <xaudio2.h>
+#include <xapo.h>
 
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace {
 
@@ -48,6 +51,86 @@ struct EngineCallback : IXAudio2EngineCallback {
     {
         critical_error.store(error, std::memory_order_relaxed);
     }
+};
+
+/* The final mix while a video records (audio_capture.h): an in-place effect
+   on the mastering voice that hands each processed buffer on and changes
+   nothing. Float samples at the mastering voice's rate and channels. */
+struct CaptureEffect final : IXAPO {
+    LONG references = 1;
+    UINT32 channels = 2, rate = 48000;
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **object) override
+    {
+        if (object == nullptr) return E_POINTER;
+        if (IsEqualIID(id, __uuidof(IXAPO)) || IsEqualIID(id, __uuidof(IUnknown))) {
+            *object = static_cast<IXAPO *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&references)); }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        const LONG left = InterlockedDecrement(&references);
+        if (left == 0) delete this;
+        return static_cast<ULONG>(left);
+    }
+    HRESULT STDMETHODCALLTYPE GetRegistrationProperties(XAPO_REGISTRATION_PROPERTIES **properties) override
+    {
+        if (properties == nullptr) return E_POINTER;
+        auto *p = static_cast<XAPO_REGISTRATION_PROPERTIES *>(CoTaskMemAlloc(sizeof(XAPO_REGISTRATION_PROPERTIES)));
+        if (p == nullptr) return E_OUTOFMEMORY;
+        *p = {};
+        lstrcpynW(p->FriendlyName, L"DOAXBV video sound", static_cast<int>(sizeof p->FriendlyName / sizeof p->FriendlyName[0]));
+        p->MajorVersion = 1;
+        p->Flags = XAPO_FLAG_CHANNELS_MUST_MATCH | XAPO_FLAG_FRAMERATE_MUST_MATCH |
+            XAPO_FLAG_BITSPERSAMPLE_MUST_MATCH | XAPO_FLAG_BUFFERCOUNT_MUST_MATCH | XAPO_FLAG_INPLACE_SUPPORTED |
+            XAPO_FLAG_INPLACE_REQUIRED;
+        p->MinInputBufferCount = p->MaxInputBufferCount = 1;
+        p->MinOutputBufferCount = p->MaxOutputBufferCount = 1;
+        *properties = p;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE IsInputFormatSupported(const WAVEFORMATEX *, const WAVEFORMATEX *requested,
+        WAVEFORMATEX **supported) override
+    {
+        if (supported != nullptr) *supported = nullptr;
+        return requested != nullptr ? S_OK : E_POINTER;
+    }
+    HRESULT STDMETHODCALLTYPE IsOutputFormatSupported(const WAVEFORMATEX *, const WAVEFORMATEX *requested,
+        WAVEFORMATEX **supported) override
+    {
+        if (supported != nullptr) *supported = nullptr;
+        return requested != nullptr ? S_OK : E_POINTER;
+    }
+    HRESULT STDMETHODCALLTYPE Initialize(const void *, UINT32) override { return S_OK; }
+    void STDMETHODCALLTYPE Reset() override {}
+    HRESULT STDMETHODCALLTYPE LockForProcess(UINT32 input_count, const XAPO_LOCKFORPROCESS_BUFFER_PARAMETERS *inputs,
+        UINT32, const XAPO_LOCKFORPROCESS_BUFFER_PARAMETERS *) override
+    {
+        if (input_count != 1u || inputs == nullptr || inputs[0].pFormat == nullptr) return E_INVALIDARG;
+        channels = inputs[0].pFormat->nChannels;
+        rate = inputs[0].pFormat->nSamplesPerSec;
+        return S_OK;
+    }
+    void STDMETHODCALLTYPE UnlockForProcess() override {}
+    void STDMETHODCALLTYPE Process(UINT32 input_count, const XAPO_PROCESS_BUFFER_PARAMETERS *inputs,
+        UINT32 output_count, XAPO_PROCESS_BUFFER_PARAMETERS *outputs, BOOL enabled) override
+    {
+        if (input_count == 1u && inputs != nullptr && enabled && inputs[0].BufferFlags == XAPO_BUFFER_VALID &&
+            recomp_audio_capture_on())
+            recomp_audio_capture_feed(static_cast<const float *>(inputs[0].pBuffer), inputs[0].ValidFrameCount,
+                channels, rate);
+        if (output_count == 1u && outputs != nullptr && inputs != nullptr) {
+            outputs[0].BufferFlags = inputs[0].BufferFlags;
+            outputs[0].ValidFrameCount = inputs[0].ValidFrameCount;
+        }
+    }
+    UINT32 STDMETHODCALLTYPE CalcInputFrames(UINT32 frames) override { return frames; }
+    UINT32 STDMETHODCALLTYPE CalcOutputFrames(UINT32 frames) override { return frames; }
 };
 
 EngineCallback callback;
@@ -208,6 +291,22 @@ extern "C" void recomp_audio_output_initialize(void)
     if (FAILED(error)) {
         disableOutput("MasterSetVolume", error);
         return;
+    }
+    {
+        // Videos take the final mix (audio_capture.h); without it they are silent.
+        auto *capture = new (std::nothrow) CaptureEffect();
+        if (capture != nullptr) {
+            XAUDIO2_EFFECT_DESCRIPTOR effect{static_cast<IUnknown *>(static_cast<IXAPO *>(capture)), TRUE, 0};
+            XAUDIO2_VOICE_DETAILS details{};
+            master->GetVoiceDetails(&details);
+            effect.OutputChannels = details.InputChannels;
+            const XAUDIO2_EFFECT_CHAIN chain{1, &effect};
+            const HRESULT chained = master->SetEffectChain(&chain);
+            if (FAILED(chained))
+                std::fprintf(stderr, "[audio-output] video sound capture unavailable (0x%08lX)\n",
+                    static_cast<unsigned long>(chained));
+            capture->Release(); // XAudio2 holds its own reference
+        }
     }
     std::fprintf(stderr,
         "[audio-output] initialized backend=xaudio2_9 master_gain=%.6f\n", gain);

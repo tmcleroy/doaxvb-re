@@ -733,6 +733,7 @@ if(RECOMP_PROGRAM_DIR)
         camera_effects.c
         camera_settings.c
         camera_store.c
+        audio_capture.c
         unlock_swimsuits.c
         ui_log.c
         d3d_creation_model.c
@@ -885,7 +886,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
-    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c camera_effects.c)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -910,7 +911,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_thread_test)
-    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c camera_effects.c)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
@@ -937,8 +938,8 @@ else()
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
-    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c camera_effects.c)
-    add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp)
+    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
+    add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp audio_capture.c)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
     recomp_use_sdl3(recomp_input_host_test)

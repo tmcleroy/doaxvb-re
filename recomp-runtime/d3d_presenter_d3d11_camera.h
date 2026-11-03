@@ -18,6 +18,7 @@
 #include "camera_effects_shader.h"
 #include "d3d_presenter.h"
 #include "screenshot.h"
+#include "video_sound.h"
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -146,6 +147,8 @@ struct D3d11CameraEffects {
     unsigned video_frames = 0;
     bool video_failed = false, video_warned = false;
     std::string video_path;
+    // Its sound (video_sound.h).
+    VideoSound sound;
 
     template <typename T> static void drop(T *&object)
     {
@@ -613,9 +616,13 @@ struct D3d11CameraEffects {
     {
         if (pipe != nullptr) {
             const int status = _pclose(pipe);
-            std::fprintf(stderr, status == 0 && !video_failed ? "recomp video: saved %s (%u frames)\n"
-                                                              : "recomp video: %s failed after %u frames\n",
-                video_path.c_str(), video_frames);
+            const bool saved = status == 0 && !video_failed;
+            const bool with_sound = sound.finish(ffmpeg(), video_path, saved);
+            std::fprintf(stderr, saved ? "recomp video: saved %s (%u frames%s)\n"
+                                       : "recomp video: %s failed after %u frames%s\n",
+                video_path.c_str(), video_frames, with_sound ? ", with sound" : "");
+        } else {
+            sound.finishWithout();
         }
         pipe = nullptr;
         drop(staging);
@@ -653,6 +660,7 @@ struct D3d11CameraEffects {
             drop(staging);
             return false;
         }
+        sound.start(video_path);
         std::fprintf(stderr, "recomp video: recording %ux%u to %s\n", video_width, video_height, video_path.c_str());
         return true;
     }
@@ -689,6 +697,7 @@ struct D3d11CameraEffects {
                         video_failed = true;
                 context->Unmap(staging, 0u);
                 ++video_frames;
+                sound.frame();
             }
             if (video_failed) {
                 // ffmpeg quit (no encoder, a full disk): not again until asked again.

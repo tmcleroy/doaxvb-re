@@ -4,6 +4,7 @@
    starvation, and an inaudible pitch trim that holds that cushion against the
    device's real consumption rate. */
 #include "audio_output.h"
+#include "audio_capture.h"
 
 #include <SDL3/SDL.h>
 
@@ -63,8 +64,21 @@ void writeWavHeader(FILE *file, uint32_t data_bytes, int channels, int rate)
     std::fwrite("data", 1, 4, file); u32(data_bytes);
 }
 
+float capture_gain = 1.0f;
+
 void SDLCALL dumpPostmix(void *, const SDL_AudioSpec *spec, float *buffer, int buflen)
 {
+    /* A video being recorded takes the final mix too (audio_capture.h), at
+       the game's own level: SDL runs this after the device gain, which is the
+       player's volume, so the gain is divided back out. */
+    if (recomp_audio_capture_on() && spec->channels > 0 && buflen > 0 && capture_gain > 0.0f) {
+        const uint32_t channels = static_cast<uint32_t>(spec->channels);
+        const uint32_t count = static_cast<uint32_t>(buflen) / 4u / channels;
+        static thread_local std::vector<float> level;
+        level.assign(buffer, buffer + size_t(count) * channels);
+        for (float &sample : level) sample /= capture_gain;
+        recomp_audio_capture_feed(level.data(), count, channels, static_cast<uint32_t>(spec->freq));
+    }
     if (!dump_file || spec->channels != dump_channels || spec->freq != dump_rate) return;
     std::fwrite(buffer, 1, static_cast<size_t>(buflen), dump_file);
     dump_bytes += static_cast<uint64_t>(buflen);
@@ -138,6 +152,7 @@ extern "C" void recomp_audio_output_initialize(void)
         return;
     }
     SDL_SetAudioDeviceGain(audio_device, static_cast<float>(gain));
+    capture_gain = static_cast<float>(gain);
 
     SDL_AudioSpec spec{};
     int frames = 0;
@@ -150,9 +165,9 @@ extern "C" void recomp_audio_output_initialize(void)
             dump_rate = spec.freq;
             dump_bytes = 0;
             writeWavHeader(dump_file, 0, dump_channels, dump_rate);
-            SDL_SetAudioPostmixCallback(audio_device, dumpPostmix, nullptr);
         }
     }
+    SDL_SetAudioPostmixCallback(audio_device, dumpPostmix, nullptr);
     SDL_ResumeAudioDevice(audio_device);
     std::fprintf(stderr,
         "[audio-output] initialized backend=sdl3 master_gain=%.6f driver=%s "

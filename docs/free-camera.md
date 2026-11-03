@@ -455,6 +455,17 @@ the frame is drawn as a transparent screenshot's is, with every draw that is
 not a character's left out, and starts from the backdrop's colour. The ball,
 the court and the game's overlay are not drawn.
 
+Videos have the game's sound (`audio_capture.c`, `video_sound.h`): while one
+records, the audio output hands its final mix to a ring of two seconds (on
+SDL its postmix callback, divided by the device gain so the sound is at the
+game's own level whatever the volume; on Windows an in-place effect on
+XAudio2's mastering voice), and each video frame written takes its 1/60 s of
+it into a raw file beside the video, so sound and picture stay frame for
+frame together even when frames are slow. When the video stops, ffmpeg adds
+the sound as AAC without encoding the picture again and puts it in place of
+the silent file in one step. Muted (`RECOMP_AUDIO_GAIN=0`, no device) the
+video is silent, as before. In slow motion the sound runs at its own speed.
+
 Motion blur draws each frame as the average of 4, 8 or 16 pictures, each
 part of the way from one game frame to the next: slow motion's blend, made
 that many times finer (`step_slow_motion`), at normal speed or slowed. A
