@@ -611,6 +611,10 @@ struct RecompD3dPresenter {
         // Time of day's tint for the baked scene, taken at each present for the next frame.
         bool tint = false;
         float tint_rgb[3] = {1.0f, 1.0f, 1.0f};
+        // A studio backdrop, taken at each present for the next frame: only
+        // the characters are drawn, over this colour.
+        bool backdrop = false;
+        float backdrop_rgb[3] = {};
         // A 3D draw since the scene's depth clear: 2D draws before it are
         // backgrounds (the sky), after it the game's overlay.
         bool scene_drawn = false;
@@ -3324,6 +3328,8 @@ SDL_GPUTexture *effectsRender(RecompD3dPresenter *presenter, SDL_GPUCommandBuffe
     RecompCameraEffects settings;
     recomp_camera_effects_take(&settings);
     e.tint = recomp_camera_effects_scene_tint(e.tint_rgb);
+    e.backdrop = settings.backdrop;
+    std::memcpy(e.backdrop_rgb, settings.backdrop_rgb, sizeof e.backdrop_rgb);
     const float subject = e.subject_depth;
     recomp_camera_effects_report_subject(subject);
     e.subject_depth = e.subject_offset = 0.0f;
@@ -3757,6 +3763,12 @@ SDL_GPUTexture *blurAdd(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL
     blit.filter = SDL_GPU_FILTER_NEAREST;
     SDL_BlitGPUTexture(cmdbuf, &blit);
     return b.output;
+}
+
+// This frame draws only the characters: a transparent screenshot's, or over a backdrop.
+bool charactersOnly(const RecompD3dPresenter *p)
+{
+    return p->clear_shot || (p->effects.enabled && p->effects.backdrop);
 }
 
 // Transparent screenshots are asked for (the camera effects' setting).
@@ -4315,9 +4327,11 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             color_info.load_op = SDL_GPU_LOADOP_LOAD;
         }
         // A transparent screenshot's frame starts from nothing.
-        if (is_main && presenter->clear_shot && (clear.clear_color || clear.clear_depth)) {
+        if (is_main && charactersOnly(presenter) && (clear.clear_color || clear.clear_depth)) {
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
-            color_info.clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+            const float *rgb = presenter->effects.backdrop_rgb;
+            color_info.clear_color = presenter->clear_shot ? SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f}
+                                                           : SDL_FColor{rgb[0], rgb[1], rgb[2], 1.0f};
         }
 
         SDL_GPUDepthStencilTargetInfo depth_info{};
@@ -4522,7 +4536,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
-        if (presenter->clear_shot && target_color == presenter->backbuffer_color && !draw.character)
+        if (charactersOnly(presenter) && target_color == presenter->backbuffer_color && !draw.character)
             return RECOMP_D3D_PRESENTER_OK;
         SDL_GPUTexture *target_depth = lookupDepthTarget(presenter, draw.target, host_w, host_h);
 

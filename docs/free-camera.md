@@ -349,6 +349,7 @@ the sticks, WASD and the right mouse button still fly.
 | Grid | Off, Thirds, Golden ratio, Centre (on screen only, never in screenshots) |
 | Camera spot | 1 to 4: A goes to the spot, X saves the view there |
 | Screenshot background | The scene, or transparent with only the girls kept, plus a depth picture |
+| Backdrop | The scene, or only the girls over Black, Grey studio, White, Green screen or Blue screen (Metal and Vulkan) |
 | Camera path | Right adds the flown view as the next of up to 16 keyframes, left removes the last |
 | Path length | 2 to 60 seconds |
 | Play path | Right plays the path from its first view, left stops |
@@ -435,6 +436,11 @@ it moves with her at the place it was flown to from her, so flying still
 changes where it rides. The point she is tracked by catches up at 6 a second,
 so her steps do not shake the picture. Orbit and a playing path take over
 from it.
+
+A backdrop draws only the girls, over a plain colour, while the camera flies:
+the frame is drawn as a transparent screenshot's is, with every draw that is
+not a character's left out, and starts from the backdrop's colour. The ball,
+the court and the game's overlay are not drawn.
 
 Motion blur draws each frame as the average of 4, 8 or 16 pictures, each
 part of the way from one game frame to the next: slow motion's blend, made

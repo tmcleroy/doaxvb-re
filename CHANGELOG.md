@@ -25,7 +25,8 @@
   the key light, sets exposure, contrast and saturation, adds bloom and sun
   glare, shows a composition grid, saves four camera spots (keys 1 to 4,
   Shift saves), and takes screenshots with a transparent background (only
-  the girls) and a depth picture. Camera paths play a smooth move through up
+  the girls) and a depth picture, or shows the girls live over a studio
+  backdrop (black, grey, white, green or blue screen). Camera paths play a smooth move through up
   to 16 saved views, each keeping its look (time of day, exposure, focus,
   roll and more blend along the way), and can record it to an MP4 with ffmpeg. Smooth slow
   motion (1/2 to 1/8, blended between game frames, so videos are smooth

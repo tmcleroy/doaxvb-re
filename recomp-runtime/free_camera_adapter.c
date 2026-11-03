@@ -1344,6 +1344,7 @@ void recomp_free_camera_overlay(bool viewer)
         effects.hour = -1.0f;
         effects.light_angle = 0.0f;
         effects.light_strength = 1.0f;
+        effects.backdrop = false;
     }
     recomp_camera_effects_publish(&effects);
     apply_hiding();

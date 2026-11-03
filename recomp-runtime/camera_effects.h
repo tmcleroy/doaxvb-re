@@ -59,6 +59,10 @@ typedef struct RecompCameraEffects {
     /* Screenshots keep only the characters (alpha from the presenter's
        character mask) and save a depth picture beside them. */
     bool transparent;
+    /* A studio backdrop: when set, only the characters are drawn, over this
+       colour, in place of the scene. */
+    bool backdrop;
+    float backdrop_rgb[3];
     /* Every frame shown goes to a video file while this is set. */
     bool recording;
 } RecompCameraEffects;

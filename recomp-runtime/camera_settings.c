@@ -16,6 +16,20 @@ static const float MAX_ROLL = 45.0f;
 /* Half hours from 06:00 to 22:00. */
 static const unsigned TIME_STEPS = 33u;
 
+/* Studio backdrops: the scene, or a plain colour behind the characters. */
+static const struct {
+    const char *name;
+    float rgb[3];
+} BACKDROPS[] = {
+    {"Scene", {0.0f, 0.0f, 0.0f}},
+    {"Black", {0.02f, 0.02f, 0.02f}},
+    {"Grey studio", {0.42f, 0.42f, 0.44f}},
+    {"White", {0.94f, 0.94f, 0.94f}},
+    {"Green screen", {0.0f, 0.69f, 0.25f}},
+    {"Blue screen", {0.0f, 0.28f, 0.73f}},
+};
+enum { BACKDROP_COUNT = sizeof BACKDROPS / sizeof BACKDROPS[0] };
+
 void recomp_camera_settings_default(RecompCameraSettings *settings)
 {
     memset(settings, 0, sizeof *settings);
@@ -136,6 +150,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_BACKGROUND:
         if (steps % 2 != 0) settings->transparent = !settings->transparent;
         break;
+    case RECOMP_CAMERA_SETTING_BACKDROP:
+        settings->backdrop = (unsigned)wrap((int)settings->backdrop + steps, BACKDROP_COUNT);
+        break;
     case RECOMP_CAMERA_SETTING_PATH_LENGTH:
         settings->path_seconds = 2u + clamp_index((int)settings->path_seconds - 2 + steps, 59u);
         break;
@@ -163,6 +180,9 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     switch (row) {
     case RECOMP_CAMERA_SETTING_RESET:
         snprintf(text, size, "Reset all camera options: press right");
+        break;
+    case RECOMP_CAMERA_SETTING_BACKDROP:
+        snprintf(text, size, "Backdrop: %s", BACKDROPS[settings->backdrop % BACKDROP_COUNT].name);
         break;
     case RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD:
         snprintf(text, size, "Depth of field: %s", settings->depth_of_field ? "On" : "Off");
@@ -313,6 +333,8 @@ void recomp_camera_settings_effects(const RecompCameraSettings *settings, float 
     effects->saturation = (float)settings->saturation / 10.0f;
     effects->bloom = (float)settings->bloom / 10.0f;
     effects->transparent = settings->transparent;
+    effects->backdrop = settings->backdrop % BACKDROP_COUNT != 0u;
+    memcpy(effects->backdrop_rgb, BACKDROPS[settings->backdrop % BACKDROP_COUNT].rgb, sizeof effects->backdrop_rgb);
     effects->active = effects->depth_of_field || settings->roll != 0.0f ||
         settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
         settings->grain != 0u || effects->letterbox > 0.0f || settings->exposure != 0 ||

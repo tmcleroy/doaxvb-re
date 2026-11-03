@@ -41,6 +41,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_GRID,
     RECOMP_CAMERA_SETTING_SPOT,
     RECOMP_CAMERA_SETTING_BACKGROUND,
+    RECOMP_CAMERA_SETTING_BACKDROP,
     RECOMP_CAMERA_SETTING_PATH,
     RECOMP_CAMERA_SETTING_PATH_LENGTH,
     RECOMP_CAMERA_SETTING_PATH_PLAY,
@@ -106,6 +107,7 @@ typedef struct RecompCameraSettings {
     unsigned grid;        /* RecompCameraGrid */
     unsigned spot;        /* the camera spot the Camera spot row points at, 0 to 3 */
     bool transparent;     /* screenshots keep only the characters, with a depth picture */
+    unsigned backdrop;    /* 0 the scene, else a studio colour behind the characters */
     unsigned path_seconds; /* how long the camera path takes to play, 2 to 60 */
     bool record;          /* playing the path records a video */
     unsigned slow;        /* the scene runs one frame in 1, 2, 4 or 8 (index 0 to 3) */
