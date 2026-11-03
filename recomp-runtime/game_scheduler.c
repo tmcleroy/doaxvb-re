@@ -382,14 +382,28 @@ static void game_swap(void)
 enum { TICK_NS = 1000000000 / 60 };
 static bool display_ready;
 static int64_t completed_tick_ns;
+/* A pass hidden on request (recomp_game_hide_pass), at 60 Hz only. */
+static bool pass_hidden;
+static uint32_t pass_hidden_frame;
+void recomp_game_hide_pass(void)
+{
+    pass_hidden = !display_ready;
+    pass_hidden_frame = recomp_d3d_frame_adapter_swap_counter();
+}
 bool recomp_game_tick_hidden(void)
 {
+    /* The Swap counts its frame before asking, hence the one after. */
+    if (pass_hidden && recomp_d3d_frame_adapter_swap_counter() > pass_hidden_frame + 1u) pass_hidden = false;
     /* A tick that starts hidden stays hidden: its Clear and earlier draws were
        skipped, so foreign draws found mid-tick show from the next tick. */
-    return display_ready && authored_pass && tick_displayed && !hidden_swap_done &&
+    return ((display_ready && authored_pass && tick_displayed && !hidden_swap_done) || pass_hidden) &&
         *recomp_memory_u32(0x005f2b98u) == 0 && !recomp_game_startup_movie_playing();
 }
-void recomp_game_tick_hidden_swap(void) { hidden_swap_done = true; }
+void recomp_game_tick_hidden_swap(void)
+{
+    if (pass_hidden) pass_hidden = false;
+    else hidden_swap_done = true;
+}
 void recomp_game_tick_drew(void) { foreign_draws = true; }
 static int64_t next_tick_ns, pass_start_ns, tick_pass_ns, display_pass_ns, render_ns;
 static uint64_t pass_start_waited_ns;

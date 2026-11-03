@@ -15,6 +15,10 @@ bool recomp_game_authored_pass(void);
 /* Hide the authoritative frame; completed snapshots supply all HFR frames. */
 bool recomp_game_tick_hidden(void);
 void recomp_game_tick_hidden_swap(void);
+/* Hides the rest of this pass, to its Swap, which then neither presents nor
+   waits for the display: the game runs a frame unseen (the free camera's
+   smooth slow motion). Only at 60 Hz; display passes have their own. */
+void recomp_game_hide_pass(void);
 /* Tick-only code drew into this tick's frame; show it and skip display passes. */
 void recomp_game_tick_drew(void);
 /* Fractional-model test seam; runtime display uses completed snapshots. */

@@ -411,8 +411,24 @@ the system's; without it the log says so and nothing is recorded. The game
 steps once a frame, so a slow encoder slows the scene but not the video.
 
 Slow motion freezes the scene and steps it one frame in every 2, 4 or 8
-shown, so the animation is stepped rather than blended; a recorded video
-shows each pose for that many frames. Stepping poses back works on a frozen
+shown. At 60 Hz (no `RECOMP_GAME_HZ`) it is smooth: each frame shown is part
+of the way between the last two steps, a step late, so the girls, the ball
+and the foliage move every frame and a recorded video is smooth too
+(`slow_motion.c`). After each step it samples what the high-refresh display
+passes blend (`game_display.c`): the ball's position and spin, each
+character's place, heading and three bone banks, the scene lights, the boats
+and the foliage's sway. Bones blend as rigid turns. A character who moves
+more than half a unit in a frame, or comes or goes, or the ball more than
+two, is not slid. A frozen frame still runs 0x000AF380, which skips the
+skeleton build but derives the joint banks (0x000AE350, 0x000AE3F0) from the
+blended bones, so joints follow. The step itself runs unseen
+(`recomp_game_hide_pass`): its backbuffer draws are skipped and its Swap
+neither presents nor waits for the display, as a hidden high-refresh tick's
+does, so it costs no frame on screen. Everything blended is game state, so
+before the scene runs on (a step, or a thaw: `recomp_scene_freeze_set_run_hook`)
+the newest sample goes back exactly. A girl hidden or shown since the last
+sample is left as she is until the next. Above 60 Hz slow motion steps
+without blending. Stepping poses back works on a frozen
 scene: every skeleton build records each character's 32 bones (0x004D3650 +
 n * 0x800) and her root block (0x004D6FF0 + n * 0xBC), which her bones are
 drawn relative to, for the last 600 frames (`recomp_actor_pose_history_step`),

@@ -9,6 +9,7 @@
 #include "screenshot.h"
 #include "camera_settings.h"
 #include "camera_path.h"
+#include "slow_motion.h"
 #include "viewer_menu_adapter.h"
 
 #include <math.h>
@@ -21,6 +22,7 @@
 #include "animation_probe.h"
 #include "d3d_draw_adapter.h"
 #include "d3d_frame_adapter.h"
+#include "game_scheduler.h"
 
 /* Free camera: RECOMP_FREE_CAMERA=1 lets F1, or clicking the right stick,
    take the game's camera and fly it. It used to take BACK with the click,
@@ -188,6 +190,12 @@ static struct {
     /* Slow motion froze the scene, and frames shown since its last step. */
     bool slowed;
     unsigned slow_frames;
+    /* Smooth slow motion: the scene ran on, so it is sampled again (as it
+       went on from the last sample, or not); who was hidden at the sample;
+       the frame last run unseen. */
+    bool sample_due, sample_continues;
+    uint32_t sampled_hidden;
+    uint32_t unseen_frame;
     bool back_key_held;
     HeldRepeat pose_repeat;
 } state = {.enabled = -1, .controller_hints = -1};
@@ -295,6 +303,7 @@ static void sample_while_frozen(uint32_t frame);
 static bool intercept_screenshot(void);
 static void frame_started(void);
 static void draw_viewed(const float view[16]);
+static void scene_runs(void);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
@@ -303,6 +312,7 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
        through it. */
     if (!enabled()) return;
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
+    recomp_scene_freeze_set_run_hook(scene_runs);
     recomp_d3d_frame_adapter_set_first_clear_hook(frame_started);
     recomp_d3d_draw_set_view_observer(draw_viewed);
     recomp_screenshot_set_interceptor(intercept_screenshot);
@@ -849,7 +859,9 @@ static void build_camera(void)
                 /* The path plays at 60 frames a second of its length. */
                 const float t = (float)state.play_frames / (60.0f * (float)state.settings.path_seconds);
                 recomp_camera_path_sample(&state.path, t, &state.camera);
-                if (++state.play_frames > 60u * state.settings.path_seconds) state.playing = false;
+                /* A frame run unseen is not one of them. */
+                if (frame != state.unseen_frame && ++state.play_frames > 60u * state.settings.path_seconds)
+                    state.playing = false;
             } else if (state.settings.orbit != RECOMP_CAMERA_ORBIT_OFF) {
                 /* Round the point in focus: the character in the middle of
                    the picture, or the camera's target. */
@@ -1091,23 +1103,55 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     }
 }
 
-/* Slow motion: the scene is frozen and stepped one frame in 2, 4 or 8. */
+/* Before a frozen scene runs on: the scene goes back to exactly where the
+   game left it, and is sampled again once it has run. */
+static void scene_runs(void)
+{
+    recomp_slow_motion_restore();
+    state.sample_due = true;
+    state.sample_continues = state.slowed;
+}
+
+/* Slow motion: the scene is frozen and stepped one frame in 2, 4 or 8. At
+   60 Hz it is smooth: each step runs unseen, and each frame shown is part of
+   the way from the step before to the last one (slow_motion.c), so a step
+   is shown a step late. A girl hidden or shown since the sample is left. */
 static void step_slow_motion(void)
 {
     const unsigned every = state.active && state.settings_ready ? 1u << state.settings.slow : 1u;
+    const bool smooth = recomp_game_requested_hz() == 0u;
     if (every > 1u) {
         if (!state.slowed) {
             recomp_scene_freeze_set(true);
             state.slowed = true;
             state.slow_frames = 0u;
+            state.sample_due = true;
+            state.sample_continues = false;
         }
-        if (++state.slow_frames >= every && recomp_actor_pose_history_back() == 0u) {
+        /* Stepping back through poses shows them as they were. */
+        if (!recomp_scene_freeze_holding() || recomp_actor_pose_history_back() != 0u) return;
+        if (state.sample_due && smooth) {
+            recomp_slow_motion_commit(state.sample_continues);
+            state.sampled_hidden = state.settings_hidden;
+            state.slow_frames = 0u;
+        }
+        state.sample_due = false;
+        if (state.slow_frames >= every) {
             state.slow_frames = 0u;
             recomp_scene_freeze_step();
+            if (smooth) {
+                recomp_game_hide_pass();
+                state.unseen_frame = recomp_d3d_frame_adapter_swap_counter();
+            }
+            return;
         }
+        ++state.slow_frames;
+        if (smooth) recomp_slow_motion_apply((float)state.slow_frames / (float)every,
+            state.settings_hidden ^ state.sampled_hidden);
     } else if (state.slowed) {
         recomp_scene_freeze_set(false);
         state.slowed = false;
+        recomp_slow_motion_reset();
     }
 }
 

@@ -719,6 +719,7 @@ if(RECOMP_PROGRAM_DIR)
         title_idle.c
         free_camera.c
         camera_path.c
+        slow_motion.c
         free_camera_adapter.c
         scene_freeze.c
         scene_freeze_adapter.c

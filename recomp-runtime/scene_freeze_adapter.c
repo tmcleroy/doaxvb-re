@@ -59,11 +59,13 @@ static uint32_t turn_draws;
 static uint32_t step_until;
 static uint32_t only_function;
 static RecompSceneFreezeFrameHook frame_hook, tick_hook;
+static RecompSceneFreezeRunHook run_hook;
 static uint32_t hooked_frame, ticked_frame;
 
 void recomp_scene_freeze_set(bool freeze)
 {
     if (frozen == freeze) return;
+    if (!freeze && run_hook != NULL) run_hook();
     frozen = freeze;
     fprintf(stderr, "recomp scene freeze: %s", freeze ? "on, drawing tasks" : "off");
     if (freeze) {
@@ -119,9 +121,16 @@ void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook)
     tick_hook = hook;
 }
 
+void recomp_scene_freeze_set_run_hook(RecompSceneFreezeRunHook hook)
+{
+    run_hook = hook;
+}
+
 void recomp_scene_freeze_step(void)
 {
-    if (frozen) step_until = recomp_d3d_frame_adapter_swap_counter() + 1u;
+    if (!frozen) return;
+    if (run_hook != NULL) run_hook();
+    step_until = recomp_d3d_frame_adapter_swap_counter() + 1u;
 }
 
 bool recomp_scene_freeze_switch(uint32_t outgoing_handle, uint32_t target_handle)
@@ -194,6 +203,11 @@ void recomp_scene_freeze_set_tick_hook(RecompSceneFreezeFrameHook hook)
 
 void recomp_scene_freeze_step(void)
 {
+}
+
+void recomp_scene_freeze_set_run_hook(RecompSceneFreezeRunHook hook)
+{
+    (void)hook;
 }
 
 void recomp_scene_freeze_run_only(uint32_t function)

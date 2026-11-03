@@ -19,6 +19,9 @@ bool recomp_scene_freeze_overlay_hidden(void);
 bool recomp_scene_freeze_holding(void);
 /* Lets a frozen scene run one more frame, then holds it again. */
 void recomp_scene_freeze_step(void);
+/* Called before a frozen scene runs on, by a step or a thaw. */
+typedef void (*RecompSceneFreezeRunHook)(void);
+void recomp_scene_freeze_set_run_hook(RecompSceneFreezeRunHook hook);
 /* While `function` is not zero, only the task running that function takes
    its turns, frozen or not; every other task, drawing ones too, waits. Zero
    hands the scene back to the freeze. */
