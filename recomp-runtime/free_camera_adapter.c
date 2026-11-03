@@ -399,8 +399,12 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
     /* Off, the free camera leaves the game alone: only the input passes
-       through it. */
-    if (!enabled()) return;
+       through it. Skin shading still needs the girls' draws marked. */
+    if (!enabled()) {
+        if (recomp_camera_effects_skin_wanted())
+            recomp_d3d_draw_set_character_test(recomp_actor_pose_character_world);
+        return;
+    }
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
     recomp_scene_freeze_set_run_hook(scene_runs);
     recomp_d3d_draw_set_character_test(recomp_actor_pose_character_world);
@@ -1291,7 +1295,8 @@ static void frame_started(void)
 
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 {
-    if (!enabled()) return NULL;
+    if (!enabled())
+        return recomp_camera_effects_skin_wanted() ? recomp_actor_pose_lookup_character(guest_address) : NULL;
     if (guest_address == BUILD_CAMERA) return build_camera;
     return recomp_actor_pose_lookup_manual(guest_address);
 }

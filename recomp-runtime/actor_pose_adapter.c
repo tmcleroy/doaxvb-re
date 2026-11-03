@@ -336,6 +336,11 @@ bool recomp_actor_pose_character_world(const float world[16])
     return false;
 }
 
+RecompFunction recomp_actor_pose_lookup_character(uint32_t guest_address)
+{
+    return guest_address == BUILD_PALETTE ? build_palette : NULL;
+}
+
 RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == BUILD_PALETTE) return build_palette;
@@ -869,6 +874,12 @@ void recomp_actor_pose_set_hidden(uint32_t mask)
 }
 
 RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address)
+{
+    (void)guest_address;
+    return NULL;
+}
+
+RecompFunction recomp_actor_pose_lookup_character(uint32_t guest_address)
 {
     (void)guest_address;
     return NULL;

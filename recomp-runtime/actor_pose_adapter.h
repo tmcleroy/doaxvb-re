@@ -91,6 +91,9 @@ void recomp_actor_pose_release(void);
 void recomp_actor_pose_frame(void);
 /* Wraps the skeleton build to keep a held character in place. */
 RecompFunction recomp_actor_pose_lookup_manual(uint32_t guest_address);
+/* Only what recomp_actor_pose_character_world needs (the palette build it
+   watches), for draws marked as a character's without the free camera. */
+RecompFunction recomp_actor_pose_lookup_character(uint32_t guest_address);
 
 #ifdef __cplusplus
 }

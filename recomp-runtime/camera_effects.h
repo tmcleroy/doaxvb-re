@@ -90,6 +90,12 @@ void recomp_camera_effects_take(RecompCameraEffects *effects);
    the camera flies, the stronger of these and its own rows is used. */
 void recomp_camera_effects_always(float *occlusion, float *bloom);
 bool recomp_camera_effects_always_wanted(void);
+/* Skin shading on the girls, also the launcher's, 0 to 1 each:
+   RECOMP_D3D_SKIN_SOFT (light wraps further round, warmer, as through skin)
+   and RECOMP_D3D_SKIN_SHEEN (a soft highlight). Presenters shade per pixel
+   what looks like skin in the girls' own textures. */
+void recomp_camera_effects_skin(float *soft, float *sheen);
+bool recomp_camera_effects_skin_wanted(void);
 /* Effects that change nothing: no filter, the stage's own hour and light. */
 void recomp_camera_effects_neutral(RecompCameraEffects *effects);
 /* The presenter reports how far ahead the character nearest the middle of

@@ -135,6 +135,26 @@ void recomp_camera_effects_always(float *occlusion, float *bloom)
     if (bloom != NULL) *bloom = kept_bloom;
 }
 
+void recomp_camera_effects_skin(float *soft, float *sheen)
+{
+    static int read;
+    static float kept_soft, kept_sheen;
+    if (!read) {
+        kept_soft = launcher_amount("RECOMP_D3D_SKIN_SOFT");
+        kept_sheen = launcher_amount("RECOMP_D3D_SKIN_SHEEN");
+        read = 1;
+    }
+    if (soft != NULL) *soft = kept_soft;
+    if (sheen != NULL) *sheen = kept_sheen;
+}
+
+bool recomp_camera_effects_skin_wanted(void)
+{
+    float soft, sheen;
+    recomp_camera_effects_skin(&soft, &sheen);
+    return soft > 0.0f || sheen > 0.0f;
+}
+
 bool recomp_camera_effects_always_wanted(void)
 {
     float occlusion, bloom;

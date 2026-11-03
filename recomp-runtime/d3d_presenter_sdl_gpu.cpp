@@ -47,7 +47,7 @@ constexpr uint32_t kInitialIndexCapacity = 16u * 1024u * 1024u;  // 16 MB
 // directional block. SDL's Vulkan backend binds 4 KB per uniform slot, so
 // vertex program constants live in their own slot.
 constexpr uint32_t kHeaderUniformFloats = 148u;
-constexpr uint32_t kTransformUniformFloats = 284u;
+constexpr uint32_t kTransformUniformFloats = 292u;
 constexpr uint32_t kProgramConstantFloats = 192u * 4u;
 constexpr uint32_t kNoProgramConstants = UINT32_MAX;
 
@@ -78,6 +78,8 @@ struct TransformUniforms {
     float4 directional_material;
     float4 directional_directions[8];
     float4 directional_colors[8];
+    float4 skin;       // soft, sheen, -, on (the girls' lit draws)
+    float4 skin_view;  // toward the camera, in the lights' space
 };
 
 struct ProgramConstants {
@@ -402,6 +404,8 @@ struct PipelineKey {
     bool alpha_to_coverage = false;
     // Main-target draws also write view depth for camera effects.
     bool depth_output = false;
+    // The girls' lit draws shade skin per pixel (skinSource).
+    bool skin = false;
 
     bool depth_test_enable = false;
     bool depth_write_enable = false;
@@ -432,6 +436,7 @@ struct PipelineKey {
                sample_count == o.sample_count &&
                alpha_to_coverage == o.alpha_to_coverage &&
                depth_output == o.depth_output &&
+               skin == o.skin &&
                depth_test_enable == o.depth_test_enable &&
                depth_write_enable == o.depth_write_enable &&
                depth_func == o.depth_func &&
@@ -505,6 +510,7 @@ struct PipelineKeyHash {
         h ^= (static_cast<size_t>(k.primitive_type) << 24) ^ (static_cast<size_t>(k.cull_mode) << 28);
         h ^= (static_cast<size_t>(k.color_format) << 4) ^ (static_cast<size_t>(k.depth_format) << 12);
         h ^= (static_cast<size_t>(k.sample_count) << 30) ^ (static_cast<size_t>(k.depth_output) << 31);
+        h ^= static_cast<size_t>(k.skin) << 26;
         h ^= (static_cast<size_t>(k.color_write_mask) << 20) ^ (static_cast<size_t>(k.blend_enable) << 27);
         h ^= (static_cast<size_t>(k.src_factor) << 2) ^ (static_cast<size_t>(k.dst_factor) << 6);
         h ^= (static_cast<size_t>(k.depth_test_enable) << 1) ^ (static_cast<size_t>(k.depth_func) << 8);
@@ -539,6 +545,8 @@ struct RecompD3dPresenter {
     // 16x anisotropic filtering on mipmapped scene textures, as D3D11 draws them;
     // RECOMP_D3D_ANISOTROPY=0 turns it off.
     bool anisotropy = true;
+    // Skin shading on the girls (camera_effects.h), 0 to 1 each; both 0 is off.
+    float skin_soft = 0.0f, skin_sheen = 0.0f;
 
     // Persistent dynamic ring buffers
     SDL_GPUBuffer *draw_vertex_buffer = nullptr;
@@ -1143,9 +1151,55 @@ SDL_GPUTexture *prepareTexture(RecompD3dPresenter *presenter, const RecompD3dPre
     return gpu_tex;
 }
 
+/* Skin shading (camera_effects.h, recomp_camera_effects_skin), shared by the
+   MSL and GLSL draw shaders. skin_mask: how much a texel of a girl's own
+   texture looks like skin (warm, r > g >= b, moderately saturated, not dark);
+   swimsuits in strong colours, white, black and blue stay out. skin_light: the
+   draw's lights per pixel, the lit side as the game lights it and the shadow
+   edge gaining reddened light (what passes under the skin), and a soft two-lobe
+   highlight with a skin's Fresnel, toward the camera (non-local viewer). With
+   no skin it is the vertex lighting per pixel. */
+std::string skinSource(bool msl)
+{
+    const std::string f3 = msl ? "float3" : "vec3";
+    std::string s;
+    s += msl ? "static float skin_mask(float3 c) {\n" : "float skin_mask(vec3 c) {\n";
+    s += "    float hi = max(c.r, max(c.g, c.b)), lo = min(c.r, min(c.g, c.b));\n";
+    s += "    float sat = (hi - lo) / max(hi, 1e-3);\n";
+    s += "    float warm = smoothstep(0.01, 0.06, c.r - c.g) * smoothstep(-0.03, 0.02, c.g - c.b);\n";
+    s += "    float amount = smoothstep(0.08, 0.16, sat) * (1.0 - smoothstep(0.62, 0.78, sat));\n";
+    s += "    return warm * amount * smoothstep(0.12, 0.25, hi);\n";
+    s += "}\n";
+    s += msl ? "static float3 skin_light(constant TransformUniforms &u, float3 n, float skin, thread float3 &sheen) {\n"
+             : "vec3 skin_light(vec3 n, float skin, out vec3 sheen) {\n";
+    s += "    " + f3 + " rgb = u.directional_base.rgb;\n";
+    s += "    " + f3 + " v = u.skin_view.xyz;\n";
+    s += "    sheen = " + f3 + "(0.0);\n";
+    // The light the shadow edge gains by wrapping, tinted red: what passes under the skin.
+    s += "    " + f3 + " scatter = " + f3 + "(0.3, 0.08, 0.04) * (u.skin.x * skin);\n";
+    s += "    int count = int(u.directional_flags.z);\n";
+    s += "    for (int i = 0; i < count; ++i) {\n";
+    s += "        " + f3 + " l = u.directional_directions[i].xyz;\n";
+    s += "        float ndl = dot(n, l);\n";
+    s += "        float lambert = max(ndl, 0.0);\n";
+    s += "        float wrapped = clamp((ndl + 0.3) / 1.3, 0.0, 1.0);\n";
+    s += "        " + f3 + " diffuse = " + f3 + "(lambert) + (wrapped - lambert) * scatter;\n";
+    s += "        rgb += u.directional_material.rgb * u.directional_colors[i].rgb * diffuse;\n";
+    s += "        " + f3 + " h = normalize(l + v);\n";
+    s += "        float ndh = clamp(dot(n, h), 0.0, 1.0);\n";
+    s += "        float fresnel = 0.028 + 0.972 * pow(1.0 - clamp(dot(h, v), 0.0, 1.0), 5.0);\n";
+    s += "        float lobes = 0.7 * pow(ndh, 48.0) + 0.3 * pow(ndh, 12.0);\n";
+    s += "        sheen += u.directional_colors[i].rgb * (lobes * fresnel * clamp(ndl * 4.0, 0.0, 1.0));\n";
+    s += "    }\n";
+    s += "    sheen *= 6.0 * u.skin.y * skin;\n";
+    s += "    return clamp(rgb, 0.0, 1.0);\n";
+    s += "}\n";
+    return s;
+}
+
 std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                            uint32_t program_count, const uint32_t (*program_tokens)[4],
-                           bool sun = false, bool depth_output = false)
+                           bool sun = false, bool depth_output = false, bool skin = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -1201,6 +1255,8 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     }
     // Camera effects: the distance along the view, for depth of field.
     if (depth_output) s += "    float view_depth [[user(view_depth)]];\n";
+    // Skin shading: the lights' normal, per pixel.
+    if (skin) s += "    float3 skin_normal [[user(skin_normal)]];\n";
     s += "};\n";
     const std::string vs_return = depth_output ? "    out.view_depth = out.position.w;\n    return out;\n"
                                                : "    return out;\n";
@@ -1213,6 +1269,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                 "                    constant SunUniforms &sun [[buffer(1)]]) {\n"
         : "vertex VSOut vs_main(VSIn in [[stage_in]], constant TransformUniforms &u [[buffer(0)]]) {\n";
     s += "    VSOut out;\n";
+    if (skin) s += "    out.skin_normal = float3(0.0);\n";
 
     bool has_prog = false;
     if (program_count) {
@@ -1277,6 +1334,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
             }
             s += "        if (u.directional_flags.y > 0.5 && dot(n, n) > 0.0) n = normalize(n);\n";
             if (sun) s += "        out.sun_normal = n;\n";
+            if (skin) s += "        out.skin_normal = n;\n";
             s += "        float3 rgb = u.directional_base.rgb;\n";
             s += "        uint light_cnt = uint(u.directional_flags.z);\n";
             s += "        for (uint i = 0; i < light_cnt; ++i) {\n";
@@ -1347,6 +1405,7 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     }
 
     if (sun) s += kMslSunVisibility;
+    if (skin) s += skinSource(true);
 
     // ps_main
     if (depth_output) s += "struct PSOut { float4 color [[color(0)]]; float4 depth [[color(1)]]; };\n";
@@ -1399,10 +1458,25 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     s += "        float4 sampled = guest_texture.sample(guest_sampler, in.texcoord * u.texture_flags.xy);\n";
     s += "        if (u.lighting_flags.y > 0.5) sampled.rgb = float3(1.0);\n";
     s += has_diffuse ? "        shaded *= sampled;\n" : "        shaded = sampled;\n";
-    s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= in.color.rgb;\n";
+    if (skin) {
+        // Skin: the lights per pixel where the texel looks like skin.
+        s += "        float3 lit = in.color.rgb;\n";
+        s += "        float3 sheen = float3(0.0);\n";
+        s += "        if (u.skin.w > 0.5 && u.directional_flags.x > 0.5) {\n";
+        s += "            float k = skin_mask(sampled.rgb);\n";
+        s += "            float3 n = in.skin_normal;\n";
+        s += "            if (dot(n, n) > 0.0) {\n";
+        s += "                lit = mix(lit, skin_light(u, normalize(n), k, sheen), k);\n";
+        s += "            }\n";
+        s += "        }\n";
+        s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= lit;\n";
+    } else {
+        s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= in.color.rgb;\n";
+    }
     s += "        if (u.lighting_flags.x > 0.5) shaded.rgb = float3(0.0);\n";
     s += "        shaded.a = (u.blend_flags.w > 0.5) ? u.blend_flags.z : (shaded.a * u.blend_flags.z);\n";
     s += "        if (u.blend_flags.y > 1.5) shaded *= u.texture_factor;\n";
+    if (skin) s += "        shaded.rgb += sheen;\n";
     s += "    }\n";
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= alpha_mask.sample(mask_sampler, in.reflection_coord, bias(u.reflection_flags.w)).a;\n";
@@ -1452,6 +1526,8 @@ layout(set = 1, binding = 0, std140) uniform TransformUniforms {
     vec4 directional_material;
     vec4 directional_directions[8];
     vec4 directional_colors[8];
+    vec4 skin;
+    vec4 skin_view;
 } u;
 )";
 
@@ -1475,6 +1551,8 @@ layout(set = 3, binding = 0, std140) uniform TransformUniforms {
     vec4 directional_material;
     vec4 directional_directions[8];
     vec4 directional_colors[8];
+    vec4 skin;
+    vec4 skin_view;
 } u;
 )";
 
@@ -1496,7 +1574,7 @@ std::string glslSunUniforms(bool fragment)
 
 std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
                                   uint32_t program_count, const uint32_t (*program_tokens)[4],
-                                  bool sun = false, bool depth_output = false)
+                                  bool sun = false, bool depth_output = false, bool skin = false)
 {
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
@@ -1556,9 +1634,11 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
         s += "layout(location = 8) out vec3 v_sun_normal;\n";
     }
     if (depth_output) s += "layout(location = 9) out float v_view_depth;\n";
+    if (skin) s += "layout(location = 10) out vec3 v_skin_normal;\n";
     const std::string vs_end = depth_output ? "    v_view_depth = gl_Position.w;\n}\n" : "}\n";
 
     s += "void main() {\n";
+    if (skin) s += "    v_skin_normal = vec3(0.0);\n";
 
     bool has_prog = false;
     if (program_count) {
@@ -1623,6 +1703,7 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
             }
             s += "        if (u.directional_flags.y > 0.5 && dot(n, n) > 0.0) n = normalize(n);\n";
             if (sun) s += "        v_sun_normal = n;\n";
+            if (skin) s += "        v_skin_normal = n;\n";
             s += "        vec3 rgb = u.directional_base.rgb;\n";
             s += "        uint light_cnt = uint(u.directional_flags.z);\n";
             s += "        for (uint i = 0u; i < light_cnt; ++i) {\n";
@@ -1673,7 +1754,8 @@ std::string buildGlslVertexShader(const RecompD3dVertexLayout &layout, uint32_t 
 }
 
 std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
-                                    uint32_t program_count, bool sun = false, bool depth_output = false)
+                                    uint32_t program_count, bool sun = false, bool depth_output = false,
+                                    bool skin = false)
 {
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
     const bool four_coords = (layout.texcoord_count == 4u);
@@ -1710,6 +1792,10 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     if (depth_output) {
         s += "layout(location = 9) in float v_view_depth;\n";
         s += "layout(location = 1) out vec4 out_depth;\n";
+    }
+    if (skin) {
+        s += "layout(location = 10) in vec3 v_skin_normal;\n";
+        s += skinSource(false);
     }
     if (two_coords) {
         // Cubic B-spline in four bilinear taps; see the Metal shader.
@@ -1769,10 +1855,22 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     s += "        vec4 sampled = texture(guest_texture, tc * u.texture_flags.xy);\n";
     s += "        if (u.lighting_flags.y > 0.5) sampled.rgb = vec3(1.0);\n";
     s += has_diffuse ? "        shaded *= sampled;\n" : "        shaded = sampled;\n";
-    s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= v_color.rgb;\n";
+    if (skin) {
+        s += "        vec3 lit = v_color.rgb;\n";
+        s += "        vec3 sheen = vec3(0.0);\n";
+        s += "        if (u.skin.w > 0.5 && u.directional_flags.x > 0.5) {\n";
+        s += "            float k = skin_mask(sampled.rgb);\n";
+        s += "            vec3 n = v_skin_normal;\n";
+        s += "            if (dot(n, n) > 0.0) lit = mix(lit, skin_light(normalize(n), k, sheen), k);\n";
+        s += "        }\n";
+        s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= lit;\n";
+    } else {
+        s += "        if (u.directional_flags.x > 0.5) shaded.rgb *= v_color.rgb;\n";
+    }
     s += "        if (u.lighting_flags.x > 0.5) shaded.rgb = vec3(0.0);\n";
     s += "        shaded.a = (u.blend_flags.w > 0.5) ? u.blend_flags.z : (shaded.a * u.blend_flags.z);\n";
     s += "        if (u.blend_flags.y > 1.5) shaded *= u.texture_factor;\n";
+    if (skin) s += "        shaded.rgb += sheen;\n";
     s += "    }\n";
     s += "    if (u.reflection_flags.z > 0.5) {\n";
     s += "        shaded.a *= texture(alpha_mask, refl_tc, u.reflection_flags.w).a;\n";
@@ -1907,10 +2005,10 @@ ShaderPair rememberShaderPair(RecompD3dPresenter *presenter, uint64_t key, Shade
 
 ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dVertexLayout &layout,
                                  uint32_t fvf, uint32_t program_count, const uint32_t (*program_tokens)[4],
-                                 bool depth_output = false)
+                                 bool depth_output = false, bool skin = false)
 {
     uint64_t shader_key = fvf ^ (static_cast<uint64_t>(program_count) << 32) ^
-        (depth_output ? UINT64_C(1) << 63 : 0u);
+        (depth_output ? UINT64_C(1) << 63 : 0u) ^ (skin ? UINT64_C(1) << 62 : 0u);
     if (program_count && program_tokens) {
         shader_key ^= programHash(program_tokens, program_count);
     }
@@ -1927,11 +2025,11 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     const bool sun = sunShader(presenter, layout, program_count);
 
     if (presenter->use_spirv) {
-        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens, sun, depth_output);
+        const std::string vs_source = buildGlslVertexShader(layout, fvf, program_count, program_tokens, sun, depth_output, skin);
         if (vs_source.empty()) return rememberShaderPair(presenter, shader_key, {});
         const std::vector<uint32_t> vs_spv = compileGlslToSpirv(vs_source, SDL_GPU_SHADERSTAGE_VERTEX);
         const std::vector<uint32_t> fs_spv = compileGlslToSpirv(
-            buildGlslFragmentShader(layout, fvf, program_count, sun, depth_output), SDL_GPU_SHADERSTAGE_FRAGMENT);
+            buildGlslFragmentShader(layout, fvf, program_count, sun, depth_output, skin), SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (vs_spv.empty() || fs_spv.empty()) {
             std::fprintf(stderr, "[presenter] failed to compile GLSL->SPIR-V shader fvf=0x%08X\n", fvf);
             return rememberShaderPair(presenter, shader_key, {});
@@ -1970,7 +2068,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         return rememberShaderPair(presenter, shader_key, {vs, fs});
     }
 
-    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens, sun, depth_output);
+    std::string msl = buildMslShader(layout, fvf, program_count, program_tokens, sun, depth_output, skin);
     if (msl.empty()) return rememberShaderPair(presenter, shader_key, {});
     SDL_GPUShaderCreateInfo vs_info{};
     vs_info.code_size = msl.size();
@@ -2010,6 +2108,12 @@ void precompileBootShaders(RecompD3dPresenter *p)
         getOrCreateShaderPair(p, layout, fvf, 0u, nullptr);
         // Main-target draws use the view-depth variant while camera effects are on.
         if (p->effects.enabled) getOrCreateShaderPair(p, layout, fvf, 0u, nullptr, true);
+        // The girls' skin variants, for the lit, textured layouts they use.
+        if (p->skin_soft > 0.0f || p->skin_sheen > 0.0f) {
+            if (layout.normal_offset == RECOMP_D3D_FVF_ABSENT || layout.texcoord_offset == RECOMP_D3D_FVF_ABSENT ||
+                layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT || layout.pretransformed) continue;
+            getOrCreateShaderPair(p, layout, fvf, 0u, nullptr, p->effects.enabled, true);
+        }
     }
 }
 
@@ -2019,7 +2123,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
                                              SDL_GPUTextureFormat color_fmt,
                                              SDL_GPUTextureFormat depth_fmt,
                                              SDL_GPUSampleCount sample_count,
-                                             bool depth_output = false)
+                                             bool depth_output = false, bool skin = false)
 {
     uint64_t prog_hash = draw.program_count ? programHash(draw.program, draw.program_count) : 0u;
 
@@ -2035,6 +2139,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     pkey.sample_count = sample_count;
     pkey.alpha_to_coverage = sample_count != SDL_GPU_SAMPLECOUNT_1 && draw.depth.alpha_test_enable;
     pkey.depth_output = depth_output;
+    pkey.skin = skin;
 
     pkey.depth_test_enable = draw.depth.depth_test_enable;
     pkey.depth_write_enable = draw.depth.depth_write_enable;
@@ -2082,7 +2187,7 @@ SDL_GPUGraphicsPipeline *getOrCreatePipeline(RecompD3dPresenter *presenter,
     }
 
     ShaderPair shaders = getOrCreateShaderPair(presenter, layout, draw.fvf, draw.program_count,
-                                               draw.program_count ? draw.program : nullptr, depth_output);
+                                               draw.program_count ? draw.program : nullptr, depth_output, skin);
     if (!shaders.vertex_shader || !shaders.fragment_shader) {
         presenter->pipelines[pkey] = nullptr;  // like D3D11, do not retry a failed draw state
         return nullptr;
@@ -4050,6 +4155,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     std::fprintf(stderr, "[presenter] initialized scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
         scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
     if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) p->anisotropy = std::strcmp(anisotropy, "0") != 0;
+    recomp_camera_effects_skin(&p->skin_soft, &p->skin_sheen);
     // Before the boot shaders: whether shadows are on decides their sun block.
     if (sunShadowRequested()) sunCreate(p);
     // Camera effects come with the free camera, or the launcher's always-on ones.
@@ -4434,9 +4540,15 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         const bool use_depth = (target_depth != nullptr);
         const SDL_GPUTextureFormat depth_fmt = use_depth ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT : SDL_GPU_TEXTUREFORMAT_INVALID;
 
+        // Skin shading: the girls' lit, opaque, textured draws on the main target.
+        const bool skin = (presenter->skin_soft > 0.0f || presenter->skin_sheen > 0.0f) && is_main &&
+            draw.character && draw.directional.enabled && !draw.program_count && draw.has_texture &&
+            !draw.blend.blend_enable && !draw.has_reflection && !draw.four_tap_filter && !layout.pretransformed &&
+            layout.normal_offset != RECOMP_D3D_FVF_ABSENT && layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
+            layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT && layout.texcoord_count <= 1u;
         // A draw whose shader or pipeline failed is skipped, as before.
         SDL_GPUGraphicsPipeline *pipeline = getOrCreatePipeline(presenter, draw, layout, color_fmt, depth_fmt, pass_samples,
-            is_main && presenter->effects.enabled);
+            is_main && presenter->effects.enabled, skin);
         if (!pipeline) {
             vdata.resize(v_offset);
             idata.resize(i_offset);
@@ -4505,6 +4617,19 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             constants[140] = 1.0f;
             constants[141] = light.normalize ? 1.0f : 0.0f;
             constants[142] = static_cast<float>(light.count);
+            if (skin) {
+                // Toward the camera: the view's z axis, the w column of the view-projection.
+                const float *m = draw.view_projection;
+                const float length = std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]);
+                if (length > 1e-6f && std::isfinite(length)) {
+                    constants[284] = presenter->skin_soft;
+                    constants[285] = presenter->skin_sheen;
+                    constants[287] = 1.0f;
+                    constants[288] = -m[3] / length;
+                    constants[289] = -m[7] / length;
+                    constants[290] = -m[11] / length;
+                }
+            }
         }
         // Time of day tints what the game does not light: the baked stage and the sky.
         // Unlit 3D draws (vertex programs too: the tint is per pixel) and 2D
@@ -4566,7 +4691,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // their constants to the second vertex uniform slot.
         const uint32_t vs_uniform_size = (draw.directional.enabled && !draw.program_count)
             ? kTransformUniformFloats : kHeaderUniformFloats;
-        const uint32_t fs_uniform_size = kHeaderUniformFloats;
+        // Skin shading reads the lights in the fragment shader too.
+        const uint32_t fs_uniform_size = skin && draw.directional.enabled ? kTransformUniformFloats : kHeaderUniformFloats;
 
         auto &udata = presenter->segment.uniform_data;
         uint32_t uniform_offset = 0;
