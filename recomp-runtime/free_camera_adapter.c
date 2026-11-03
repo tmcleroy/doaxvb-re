@@ -123,6 +123,8 @@ static const float FRAME_LIFT = 0.15f;
 static const float FRAME_FOV = 0.75f;
 /* Turntable: radians a second, a turn in about 18 seconds. */
 static const float TURNTABLE_RATE = 0.35f;
+/* Hand-held sway at Light: radians (about a fifth of a degree). */
+static const float SWAY_ANGLE = 0.0035f;
 /* Moving her: world units and radians a second at full stick. */
 static const float MOVE_HER_SPEED = 1.5f;
 static const float MOVE_HER_TURN = 1.8f;
@@ -210,6 +212,11 @@ static struct {
        for following, the camera's place from it. */
     bool tracking, following;
     float track_point[3], track_offset[3];
+    /* Hand-held sway: its clock, the frame it last stepped, and the roll it
+       adds to the view this frame. */
+    double sway_seconds;
+    uint32_t sway_frame;
+    float sway_roll;
     /* Pictures drawn for each frame shown: more than one with motion blur. */
     unsigned blur;
     /* Slow motion froze the scene, and frames shown since its last step. */
@@ -880,13 +887,40 @@ static void multiply(const float a[16], const float b[16], float out[16])
         }
 }
 
+/* Hand-held: the view sways a little, as a camera held in the hands does,
+   from sums of slow sines at unrelated rates (so the motion never visibly
+   repeats): heading, pitch and roll up to SWAY_ANGLE times the strength,
+   and the camera's place by a centimetre or two. Its clock steps a frame's
+   time each frame (a motion blur's picture's share of one), so a recorded
+   video sways the same however fast it was drawn. */
+static void sway(RecompFreeCamera *view, uint32_t frame)
+{
+    state.sway_roll = 0.0f;
+    const unsigned strength = state.settings_ready ? state.settings.handheld : 0u;
+    if (strength == 0u) return;
+    if (frame != state.sway_frame) {
+        state.sway_frame = frame;
+        state.sway_seconds += FRAME_SECONDS / (double)(state.blur ? state.blur : 1u);
+    }
+    const double t = state.sway_seconds;
+    const float amount = (float)strength * (float)strength * 0.5f + (float)strength * 0.5f; /* 1, 3, 6 */
+    const float angle = amount * SWAY_ANGLE;
+    view->heading += angle * (float)(0.6 * sin(t * 0.83) + 0.3 * sin(t * 2.11 + 1.3) + 0.1 * sin(t * 5.3 + 0.4));
+    view->pitch += angle * 0.8f * (float)(0.6 * sin(t * 0.67 + 2.0) + 0.3 * sin(t * 1.93 + 0.7) + 0.1 * sin(t * 4.7 + 2.2));
+    state.sway_roll = angle * 0.5f * (float)(0.7 * sin(t * 0.51 + 0.9) + 0.3 * sin(t * 1.37 + 2.6));
+    const float drift = amount * 0.004f;
+    view->position[0] += drift * (float)sin(t * 0.43 + 1.1);
+    view->position[1] += drift * (float)sin(t * 0.71 + 0.2);
+    view->position[2] += drift * (float)sin(t * 0.59 + 2.4);
+}
+
 /* After the game builds the flown object: the settings' roll turns its view
    about the line of sight. The game culls by the eye and target, which a
    roll only narrows. */
 static void turn_view(uint32_t object)
 {
-    const float roll = state.playing && state.play_looked ? state.play_look.roll :
-        state.settings_ready ? state.settings.roll * 3.14159265f / 180.0f : 0.0f;
+    const float roll = (state.playing && state.play_looked ? state.play_look.roll :
+        state.settings_ready ? state.settings.roll * 3.14159265f / 180.0f : 0.0f) + state.sway_roll;
     if (roll == 0.0f) return;
     const float c = cosf(roll), s = sinf(roll);
     const float turn[16] = {c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -1044,10 +1078,13 @@ static void build_camera(void)
     if (fly && state.started) update_character_focus();
     if (fly && state.started) {
         float flown[3];
-        recomp_free_camera_target(&state.camera, flown);
-        recomp_guest_store(object + CAMERA_EYE, state.camera.position, sizeof state.camera.position);
+        // The game is shown the view swayed as if held; the camera itself stays.
+        RecompFreeCamera shown = state.camera;
+        sway(&shown, frame);
+        recomp_free_camera_target(&shown, flown);
+        recomp_guest_store(object + CAMERA_EYE, shown.position, sizeof shown.position);
         recomp_guest_store(object + CAMERA_TARGET, flown, sizeof flown);
-        recomp_guest_store(object + CAMERA_FOV, &state.camera.fov, sizeof state.camera.fov);
+        recomp_guest_store(object + CAMERA_FOV, &shown.fov, sizeof shown.fov);
     }
 
     /* The animation probe observes the same build when its traces run. */

@@ -113,7 +113,7 @@ enum { BACKDROP_COUNT = sizeof BACKDROPS / sizeof BACKDROPS[0] };
 
 static const RecompCameraSettingRow CAMERA_ROWS[] = {
     RECOMP_CAMERA_SETTING_RESET, RECOMP_CAMERA_SETTING_FIELD_OF_VIEW, RECOMP_CAMERA_SETTING_ROLL,
-    RECOMP_CAMERA_SETTING_ORBIT, RECOMP_CAMERA_SETTING_TRACK, RECOMP_CAMERA_SETTING_SPOT,
+    RECOMP_CAMERA_SETTING_ORBIT, RECOMP_CAMERA_SETTING_TRACK, RECOMP_CAMERA_SETTING_HANDHELD, RECOMP_CAMERA_SETTING_SPOT,
     RECOMP_CAMERA_SETTING_SPEED, RECOMP_CAMERA_SETTING_MOTION_BLUR,
 }, LENS_ROWS[] = {
     RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD, RECOMP_CAMERA_SETTING_FOCUS, RECOMP_CAMERA_SETTING_FOCUS_DISTANCE,
@@ -229,6 +229,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
         break;
     case RECOMP_CAMERA_SETTING_TRACK:
         settings->track = (unsigned)wrap((int)settings->track + steps, 3);
+        break;
+    case RECOMP_CAMERA_SETTING_HANDHELD:
+        settings->handheld = clamp_index((int)settings->handheld + steps, 4u);
         break;
     case RECOMP_CAMERA_SETTING_ORBIT:
         settings->orbit = (RecompCameraOrbit)wrap((int)settings->orbit + steps, RECOMP_CAMERA_ORBIT_COUNT);
@@ -387,6 +390,11 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_LETTERBOX:
         snprintf(text, size, "Letterbox: %s", LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].name);
         break;
+    case RECOMP_CAMERA_SETTING_HANDHELD: {
+        static const char *const names[4] = {"Off", "Light", "Medium", "Strong"};
+        snprintf(text, size, "Hand-held: %s", names[settings->handheld % 4u]);
+        break;
+    }
     case RECOMP_CAMERA_SETTING_TRACK: {
         static const char *const names[3] = {"Off", "Look at her", "Follow her"};
         snprintf(text, size, "Track her: %s", names[settings->track % 3u]);

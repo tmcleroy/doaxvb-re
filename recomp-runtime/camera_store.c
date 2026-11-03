@@ -22,7 +22,7 @@ static const struct {
     FIELD(depth_of_field, KIND_BOOL), FIELD(focus, KIND_WORD), FIELD(focus_distance, KIND_FLOAT),
     FIELD(aperture, KIND_WORD), FIELD(roll, KIND_FLOAT), FIELD(filter, KIND_WORD),
     FIELD(vignette, KIND_WORD), FIELD(grain, KIND_WORD), FIELD(letterbox, KIND_WORD),
-    FIELD(orbit, KIND_WORD), FIELD(track, KIND_WORD), FIELD(hide_ball, KIND_BOOL),
+    FIELD(orbit, KIND_WORD), FIELD(track, KIND_WORD), FIELD(handheld, KIND_WORD), FIELD(hide_ball, KIND_BOOL),
     FIELD(hide_others, KIND_BOOL), FIELD(shot_size, KIND_WORD), FIELD(time_of_day, KIND_WORD),
     FIELD(light_angle, KIND_INT), FIELD(light_strength, KIND_WORD), FIELD(rim_light, KIND_WORD),
     FIELD(fill_light, KIND_WORD), FIELD(occlusion, KIND_WORD), FIELD(exposure, KIND_INT), FIELD(contrast, KIND_INT),

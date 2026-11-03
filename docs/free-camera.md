@@ -344,6 +344,7 @@ the sticks, WASD and the right mouse button still fly.
 | Letterbox | Off, 2.39:1, 1.85:1, 16:9, 4:3, 1:1 |
 | Orbit | Off, Around the focus, Turntable |
 | Track her | Off, Look at her (fly anywhere, aimed at her), Follow her (also rides along with her) |
+| Hand-held | Off, Light, Medium, Strong: the view sways a little, as a camera held in the hands |
 | Ball | Shown / Hidden (in a match) |
 | Other girls | Shown / Hidden |
 | Screenshot size | 1x to 4x the frame, drawn at that size |
@@ -444,6 +445,14 @@ quits (no H.264 encoder, a full disk) the video stops there, the log says so,
 and recording waits until it is turned on again. A screenshot taken while
 recording is left out of the video, which goes on in the same file. The game
 steps once a frame, so a slow encoder slows the scene but not the video.
+
+Hand-held sways what the game is shown (`sway`), never the camera itself, so
+camera spots, paths, tracking and eye contact use the steady view: heading,
+pitch and roll move by sums of slow sines at unrelated rates (about 0.2, 0.6
+and 1.2 degrees at Light, Medium and Strong), and the camera's place by a
+centimetre or two. Its clock steps a frame's time each frame, a motion
+blur's picture a share of one, so a recorded video sways the same however
+fast it was drawn.
 
 Track her keeps the chosen girl (the one \\ or L3 picks) in view while
 flying (`step_tracked`): the camera aims just above her hips, and following,

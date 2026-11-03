@@ -28,6 +28,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_LETTERBOX,
     RECOMP_CAMERA_SETTING_ORBIT,
     RECOMP_CAMERA_SETTING_TRACK,
+    RECOMP_CAMERA_SETTING_HANDHELD,
     RECOMP_CAMERA_SETTING_HIDE_BALL,
     RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_SHOT_SIZE,
@@ -101,6 +102,7 @@ typedef struct RecompCameraSettings {
     unsigned letterbox;   /* index into the aspect ratios */
     RecompCameraOrbit orbit;
     unsigned track;       /* 0 off, 1 the camera aims at her, 2 it also rides along with her */
+    unsigned handheld;    /* 0 off, 1 light, 2 medium, 3 strong: the view sways as if held */
     bool hide_ball;       /* in a match */
     bool hide_others;     /* every character but the chosen one */
     unsigned shot_size;   /* screenshots at 1 to 4 times the frame, in tiles */
