@@ -370,6 +370,9 @@ the sticks, WASD and the right mouse button still fly.
 | Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 | Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
+| Saved pose | Slot 1 to 8, and whose pose it keeps |
+| Keep her pose | Right keeps the chosen girl's pose in the slot |
+| Hold the saved pose | On holds the slot's pose on the chosen girl (only a girl of the same kind takes it) |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
 | Faces | The same for every girl, or each girl her own (Eyes and Mouth then set the chosen girl's) |
 | Eyes | Natural (blinking), Open, Closed, Wink (not Christie) |
@@ -572,6 +575,18 @@ closed); a slight smile Helena's, Kasumi's and Hitomi's 8 and Lei Fang's 12;
 wide open Helena's and Kasumi's 9 and Hitomi's 6; a grin Lei Fang's 11 and
 Lisa's 6. A girl without the shape keeps her own face. Tina's mouth was not
 framed in that run, so hers rely on the shared first six. The blend runs in a frozen scene too.
+
+The pose library keeps up to eight poses (`pose_library.c`) and holds one on
+a girl. A pose is her 32 bones kept relative to where she stands and which
+way she faces (her hips' place on the ground and their facing, level), so a
+held pose keeps its own shape, height and tilt and goes wherever the game
+moves her, turned her way; each skeleton build is replaced by it
+(`hold_bones`), before Move her moves it. Bones carry a girl's proportions,
+so a pose is held only by a girl of the type it was kept from (Kasumi's on
+Kasumi). The library is kept between runs with the settings; a hold is not,
+and Reset all or putting the camera away lets every hold go. In a match
+with the chosen girl holding a pose, her hips stayed at the kept height
+(1.09) while the game moved her across the court.
 
 Move her places the chosen girl elsewhere for a picture: her offset along the
 ground and turn about her hips are applied to her bones after each skeleton

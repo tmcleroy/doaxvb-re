@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pose_library.h"
+
 #include "runtime.h"
 
 #ifdef __cplusplus
@@ -44,6 +46,17 @@ void recomp_actor_pose_look_while_frozen(void);
    radians about her hips; only her drawn skeleton moves, not the game's
    idea of where she is. */
 void recomp_actor_pose_place(float right, float forward, float heading, float turn);
+/* The pose library (pose_library.h): keeps the chosen character's pose in
+   a slot (false when she is not in the scene); holds a slot's pose on her
+   (or lets it go), which only a character of the pose's type takes; the
+   slot she holds, or -1. The library as a whole, for keeping between runs. */
+bool recomp_actor_pose_keep_pose(unsigned slot);
+void recomp_actor_pose_hold_pose(unsigned slot, bool hold);
+int recomp_actor_pose_held_pose(void);
+const RecompPoseSlot *recomp_actor_pose_library(void);
+void recomp_actor_pose_set_library(const RecompPoseSlot library[RECOMP_POSE_SLOTS]);
+/* The type of the chosen character (the byte at +1 of her state record), or 0. */
+unsigned recomp_actor_pose_chosen_type(void);
 /* Puts the chosen character (or all) back where the game has her. */
 void recomp_actor_pose_place_reset(bool all);
 /* Characters whose bit is set are moved far below the ground. */

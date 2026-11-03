@@ -249,18 +249,21 @@ static void store_snapshot(RecompCameraStore *store)
     memcpy(store->spots, state.spots, sizeof store->spots);
     memcpy(store->spot_saved, state.spot_saved, sizeof store->spot_saved);
     store->path = state.path;
+    memcpy(store->poses, recomp_actor_pose_library(), sizeof store->poses);
 }
 
 static void settings_begin(void)
 {
     recomp_camera_settings_default(&state.settings);
-    RecompCameraStore store;
+    /* Static: the store is large (the pose library), and game fibers' stacks are not. */
+    static RecompCameraStore store;
     store_snapshot(&store);
     if (recomp_camera_store_load(recomp_disc_root_path, &store)) {
         state.settings = store.settings;
         memcpy(state.spots, store.spots, sizeof state.spots);
         memcpy(state.spot_saved, store.spot_saved, sizeof state.spot_saved);
         state.path = store.path;
+        recomp_actor_pose_set_library(store.poses);
         fprintf(stderr, "recomp free camera: settings, %u spots and a %u-view path kept from the last run\n",
             (unsigned)(store.spot_saved[0] + store.spot_saved[1] + store.spot_saved[2] + store.spot_saved[3]),
             store.path.count);
@@ -276,7 +279,7 @@ static void keep_settings(void)
     const uint64_t now = milliseconds();
     if (!state.settings_ready || now - kept_checked < 1000u) return;
     kept_checked = now;
-    RecompCameraStore store;
+    static RecompCameraStore store;
     store_snapshot(&store);
     if (memcmp(&store, &kept, sizeof store) == 0) return;
     if (recomp_camera_store_save(recomp_disc_root_path, &store)) kept = store;
@@ -389,6 +392,7 @@ static void draw_viewed(const float view[16]);
 static void scene_runs(void);
 static void step_tracked(const RecompFreeCameraControls *controls, float seconds);
 static void face_swap(RecompCameraSettingRow row);
+static void describe_pose_row(RecompCameraSettingRow row, char *text, size_t size);
 static void apply_studio_lights(void);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
@@ -563,6 +567,12 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         } else if (steps < 0) {
             state.playing = false;
         }
+    } else if (steps > 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE_KEEP) {
+        if (state.started && recomp_actor_pose_keep_pose(state.settings.pose_slot))
+            fprintf(stderr, "recomp free camera: kept her pose in slot %u\n", state.settings.pose_slot + 1u);
+    } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE_HOLD) {
+        const bool holding = recomp_actor_pose_held_pose() == (int)state.settings.pose_slot;
+        recomp_actor_pose_hold_pose(state.settings.pose_slot, !holding);
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_RESET) {
         reset_settings();
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE) {
@@ -1095,6 +1105,26 @@ static void build_camera(void)
 
 }
 
+/* The pose library's rows: the slot and whose pose it keeps, keeping hers,
+   and holding it on her. */
+static void describe_pose_row(RecompCameraSettingRow row, char *text, size_t size)
+{
+    const unsigned slot = state.settings.pose_slot;
+    const RecompPoseSlot *kept = recomp_actor_pose_library() + slot;
+    const char *whose = kept->used ? recomp_camera_settings_girl_name(kept->type) : NULL;
+    if (row == RECOMP_CAMERA_SETTING_POSE_SLOT) {
+        snprintf(text, size, "Saved pose: slot %u, %s", slot + 1u,
+            !kept->used ? "empty" : whose != NULL ? whose : "kept");
+    } else if (row == RECOMP_CAMERA_SETTING_POSE_KEEP) {
+        snprintf(text, size, "Keep her pose in slot %u: press right", slot + 1u);
+    } else {
+        const bool holding = recomp_actor_pose_held_pose() == (int)slot;
+        const bool fits = kept->used && kept->type == recomp_actor_pose_chosen_type();
+        snprintf(text, size, "Hold the saved pose on her: %s", holding ? (fits ? "On" : "On (not her pose)")
+            : !kept->used ? "Off (slot empty)" : fits ? "Off" : "Off (another girl's pose)");
+    }
+}
+
 /* With Faces each girl's own, the Eyes and Mouth rows show and change the
    chosen girl's choices: they are swapped into the settings around the
    row's change or description, and back. */
@@ -1320,6 +1350,9 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
             face_swap((RecompCameraSettingRow)row);
             if (row == RECOMP_CAMERA_SETTING_PATH)
                 snprintf(value, sizeof value, "Camera path: %u views (right adds this view, left removes)", state.path.count);
+            else if (row == RECOMP_CAMERA_SETTING_POSE_SLOT || row == RECOMP_CAMERA_SETTING_POSE_KEEP ||
+                     row == RECOMP_CAMERA_SETTING_POSE_HOLD)
+                describe_pose_row((RecompCameraSettingRow)row, value, sizeof value);
             else if (row == RECOMP_CAMERA_SETTING_PATH_PLAY && state.playing)
                 snprintf(value, sizeof value, "Playing %u%%%s (left stops)",
                     100u * state.play_frames / (60u * state.settings.path_seconds * (state.blur ? state.blur : 1u)),

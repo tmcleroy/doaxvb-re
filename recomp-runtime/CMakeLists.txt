@@ -733,6 +733,7 @@ if(RECOMP_PROGRAM_DIR)
         camera_effects.c
         camera_settings.c
         camera_store.c
+        pose_library.c
         audio_capture.c
         unlock_swimsuits.c
         ui_log.c
@@ -986,6 +987,7 @@ add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
 add_executable(recomp_camera_effects_test camera_effects.c camera_settings.c camera_effects_test.c)
 add_executable(recomp_camera_store_test camera_store.c camera_settings.c camera_path.c camera_effects.c camera_store_test.c)
+add_executable(recomp_pose_library_test pose_library.c pose_library_test.c)
 add_executable(recomp_stage_lights_test stage_lights.c time_of_day.c stage_lights_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
 if(WIN32)
@@ -1003,6 +1005,7 @@ if(NOT MSVC)
     target_link_libraries(recomp_free_camera_test PRIVATE m)
     target_link_libraries(recomp_camera_effects_test PRIVATE m)
     target_link_libraries(recomp_camera_store_test PRIVATE m)
+    target_link_libraries(recomp_pose_library_test PRIVATE m)
     target_link_libraries(recomp_stage_lights_test PRIVATE m)
     target_link_libraries(recomp_animation_pose_test PRIVATE m)
     target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
@@ -1036,6 +1039,7 @@ add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-overlay-text COMMAND recomp_overlay_text_test)
 add_test(NAME recomp-runtime-camera-effects COMMAND recomp_camera_effects_test)
 add_test(NAME recomp-runtime-camera-store COMMAND recomp_camera_store_test)
+add_test(NAME recomp-runtime-pose-library COMMAND recomp_pose_library_test)
 add_test(NAME recomp-runtime-stage-lights COMMAND recomp_stage_lights_test)
 add_test(NAME recomp-runtime-screenshot COMMAND recomp_screenshot_test)
 add_test(NAME recomp-runtime-viewer-scene COMMAND recomp_viewer_scene_test)

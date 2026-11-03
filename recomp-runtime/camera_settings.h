@@ -54,6 +54,9 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_MOTION_BLUR,
     RECOMP_CAMERA_SETTING_POSE,
     RECOMP_CAMERA_SETTING_MOVE_HER,
+    RECOMP_CAMERA_SETTING_POSE_SLOT,
+    RECOMP_CAMERA_SETTING_POSE_KEEP,
+    RECOMP_CAMERA_SETTING_POSE_HOLD,
     RECOMP_CAMERA_SETTING_EYE_CONTACT,
     RECOMP_CAMERA_SETTING_FACES,
     RECOMP_CAMERA_SETTING_EYES,
@@ -126,6 +129,7 @@ typedef struct RecompCameraSettings {
     unsigned motion_blur; /* 0 off, else each frame averages 2 << n pictures (4, 8, 16) */
     unsigned eye_contact; /* 0 off, 1 head, 2 head and eyes */
     bool move_her;        /* the sticks move and turn the chosen girl, not the camera */
+    unsigned pose_slot;   /* the pose library's slot the rows point at, 0 to 7 */
     bool face_each;       /* Eyes and Mouth are each girl's own (the chosen girl's), not everyone's */
     unsigned eyes;        /* 0 the game's own (blinking), else held (recomp_camera_settings_face) */
     unsigned mouth;       /* 0 the game's own, else held */
@@ -147,6 +151,8 @@ void recomp_camera_settings_face(const RecompCameraSettings *settings, unsigned 
 /* The same for Eyes and Mouth choices given by their places in the rows. */
 void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, unsigned girl_type,
     int *eyes, int *mouth);
+/* A girl's name by her type (the byte at +1 of her state record), or NULL. */
+const char *recomp_camera_settings_girl_name(unsigned girl_type);
 /* The rim light's colour, false when it is off. */
 bool recomp_camera_settings_rim(const RecompCameraSettings *settings, float rgb[3]);
 /* Moves a row by `steps` (negative goes back). The field of view row changes

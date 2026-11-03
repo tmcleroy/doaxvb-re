@@ -117,6 +117,11 @@ static void turn_level(float *x, float *z, float angle)
 
 /* Moves a just-built skeleton to where she was put. */
 static void place_bones(uint32_t actor);
+
+/* The pose library, and the slot each character holds (-1 none). */
+static RecompPoseSlot library[RECOMP_POSE_SLOTS];
+static int held_pose[4] = {-1, -1, -1, -1};
+static void hold_bones(uint32_t actor);
 void sub_000636D0(void);
 
 static struct {
@@ -539,6 +544,7 @@ static void build_skeleton(void)
         recomp_guest_store(state_address + 0x164u, &full, sizeof full);
     }
     build_skeleton_inner();
+    if (actor < ACTOR_COUNT && !skipped) hold_bones(actor);
     if (actor < ACTOR_COUNT && !skipped) place_bones(actor);
     if (looking) {
         recomp_guest_store(0x00416630u, ball, sizeof ball);
@@ -625,8 +631,63 @@ void recomp_actor_pose_place(float right, float forward, float heading, float tu
 void recomp_actor_pose_place_reset(bool all)
 {
     for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor)
-        if (all || actor == pose.actor) memset(&placed[actor], 0, sizeof placed[actor]);
+        if (all || actor == pose.actor) {
+            memset(&placed[actor], 0, sizeof placed[actor]);
+            held_pose[actor] = -1;
+        }
     placement_dirty = true;
+}
+
+/* A held pose replaces a just-built skeleton, around her hips as built. */
+static void hold_bones(uint32_t actor)
+{
+    const int slot = held_pose[actor];
+    if (slot < 0 || !library[slot].used) return;
+    if (library[slot].type != *recomp_memory(root_of(actor) + 1u, 1u)) return;
+    float bones[RECOMP_POSE_BONES][16];
+    recomp_guest_load(bones, bone_of(actor, 0u), sizeof bones);
+    recomp_pose_put_back(&library[slot], bones[0], bones);
+    recomp_guest_store(bone_of(actor, 0u), bones, sizeof bones);
+}
+
+bool recomp_actor_pose_keep_pose(unsigned slot)
+{
+    const uint32_t actor = pose.actor;
+    if (slot >= RECOMP_POSE_SLOTS || !active(actor)) return false;
+    float bones[RECOMP_POSE_BONES][16];
+    recomp_guest_load(bones, bone_of(actor, 0u), sizeof bones);
+    RecompPoseSlot kept;
+    if (!recomp_pose_keep(bones, *recomp_memory(root_of(actor) + 1u, 1u), &kept)) return false;
+    library[slot] = kept;
+    return true;
+}
+
+void recomp_actor_pose_hold_pose(unsigned slot, bool hold)
+{
+    const uint32_t actor = pose.actor;
+    if (actor >= ACTOR_COUNT) return;
+    held_pose[actor] = hold && slot < RECOMP_POSE_SLOTS ? (int)slot : -1;
+    placement_dirty = true;
+}
+
+int recomp_actor_pose_held_pose(void)
+{
+    return pose.actor < ACTOR_COUNT ? held_pose[pose.actor] : -1;
+}
+
+const RecompPoseSlot *recomp_actor_pose_library(void)
+{
+    return library;
+}
+
+void recomp_actor_pose_set_library(const RecompPoseSlot from[RECOMP_POSE_SLOTS])
+{
+    memcpy(library, from, sizeof library);
+}
+
+unsigned recomp_actor_pose_chosen_type(void)
+{
+    return active(pose.actor) ? *recomp_memory(root_of(pose.actor) + 1u, 1u) : 0u;
 }
 
 unsigned recomp_actor_pose_history_step(int step)
@@ -664,6 +725,40 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+bool recomp_actor_pose_keep_pose(unsigned slot)
+{
+    (void)slot;
+    return false;
+}
+
+void recomp_actor_pose_hold_pose(unsigned slot, bool hold)
+{
+    (void)slot;
+    (void)hold;
+}
+
+int recomp_actor_pose_held_pose(void)
+{
+    return -1;
+}
+
+static RecompPoseSlot no_library[RECOMP_POSE_SLOTS];
+
+const RecompPoseSlot *recomp_actor_pose_library(void)
+{
+    return no_library;
+}
+
+void recomp_actor_pose_set_library(const RecompPoseSlot from[RECOMP_POSE_SLOTS])
+{
+    (void)from;
+}
+
+unsigned recomp_actor_pose_chosen_type(void)
+{
+    return 0u;
+}
+
 void recomp_actor_pose_place(float right, float forward, float heading, float turn)
 {
     (void)right;

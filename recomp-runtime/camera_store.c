@@ -29,7 +29,7 @@ static const struct {
     FIELD(saturation, KIND_WORD), FIELD(bloom, KIND_WORD), FIELD(grid, KIND_WORD),
     FIELD(spot, KIND_WORD), FIELD(transparent, KIND_BOOL), FIELD(backdrop, KIND_WORD),
     FIELD(path_seconds, KIND_WORD), FIELD(slow, KIND_WORD), FIELD(motion_blur, KIND_WORD),
-    FIELD(eye_contact, KIND_WORD), FIELD(face_each, KIND_BOOL), FIELD(eyes, KIND_WORD), FIELD(mouth, KIND_WORD),
+    FIELD(eye_contact, KIND_WORD), FIELD(pose_slot, KIND_WORD), FIELD(face_each, KIND_BOOL), FIELD(eyes, KIND_WORD), FIELD(mouth, KIND_WORD),
 };
 #undef FIELD
 enum { FIELD_COUNT = sizeof FIELDS / sizeof FIELDS[0] };
@@ -165,6 +165,11 @@ size_t recomp_camera_store_write(const RecompCameraStore *store, char *text, siz
             put_floats(&out, "path_look", -1, look, LOOK_FLOATS);
         }
     }
+    for (unsigned i = 0u; i < RECOMP_POSE_SLOTS; ++i) {
+        if (!store->poses[i].used) continue;
+        put(&out, "pose %u %u", i, (unsigned)store->poses[i].type);
+        put_floats(&out, "", -1, &store->poses[i].bones[0][0], RECOMP_POSE_BONES * 16u);
+    }
     return out.full ? 0u : out.length;
 }
 
@@ -190,7 +195,7 @@ void recomp_camera_store_read(const char *text, RecompCameraStore *store)
     for (const char *line = text; *line != '\0';) {
         const char *end = strchr(line, '\n');
         const size_t length = end != NULL ? (size_t)(end - line) : strlen(line);
-        char buffer[512];
+        static char buffer[16384];
         if (length < sizeof buffer) {
             memcpy(buffer, line, length);
             buffer[length] = '\0';
@@ -217,6 +222,22 @@ void recomp_camera_store_read(const char *text, RecompCameraStore *store)
                     if (store->path.count < RECOMP_CAMERA_PATH_KEYS &&
                         read_floats(rest, values, VIEW_FLOATS) == VIEW_FLOATS && view_from(values, &view))
                         recomp_camera_path_add(&store->path, &view);
+                } else if (strcmp(name, "pose") == 0) {
+                    char *after = NULL, *rest_type = NULL;
+                    const long slot = strtol(rest, &after, 10);
+                    const long type = after != rest ? strtol(after, &rest_type, 10) : -1;
+                    static float values[RECOMP_POSE_BONES * 16u];
+                    if (after != rest && rest_type != after && slot >= 0 && slot < RECOMP_POSE_SLOTS &&
+                        type >= 0 && type < 256 &&
+                        read_floats(rest_type, values, RECOMP_POSE_BONES * 16u) == RECOMP_POSE_BONES * 16u) {
+                        bool finite = true;
+                        for (unsigned v = 0u; v < RECOMP_POSE_BONES * 16u; ++v) finite = finite && isfinite(values[v]);
+                        if (finite) {
+                            memcpy(store->poses[slot].bones, values, sizeof store->poses[slot].bones);
+                            store->poses[slot].type = (uint8_t)type;
+                            store->poses[slot].used = true;
+                        }
+                    }
                 } else if (strcmp(name, "path_look") == 0) {
                     float values[LOOK_FLOATS];
                     const unsigned last = store->path.count - 1u;
@@ -280,7 +301,7 @@ bool recomp_camera_store_load(const char *root, RecompCameraStore *store)
 {
     FILE *file = open_store(root, "", "rb");
     if (file == NULL) return false;
-    static char text[64 * 1024];
+    static char text[256 * 1024];
     const size_t length = fread(text, 1u, sizeof text - 1u, file);
     fclose(file);
     text[length] = '\0';
@@ -290,7 +311,7 @@ bool recomp_camera_store_load(const char *root, RecompCameraStore *store)
 
 bool recomp_camera_store_save(const char *root, const RecompCameraStore *store)
 {
-    static char text[64 * 1024];
+    static char text[256 * 1024];
     const size_t length = recomp_camera_store_write(store, text, sizeof text);
     if (length == 0u) return false;
     FILE *file = open_store(root, ".new", "wb");

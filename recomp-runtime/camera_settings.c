@@ -53,6 +53,18 @@ static const struct {
     {20, -1, -1, -1, -1}, /* Christie */
 };
 
+const char *recomp_camera_settings_girl_name(unsigned girl_type)
+{
+    static const struct {
+        uint8_t type;
+        const char *name;
+    } NAMES[] = {{1, "Helena"}, {5, "Kasumi"}, {7, "Tina"}, {12, "Lei Fang"}, {13, "Ayane"}, {14, "Hitomi"},
+        {15, "Lisa"}, {20, "Christie"}};
+    for (unsigned i = 0u; i < sizeof NAMES / sizeof NAMES[0]; ++i)
+        if (NAMES[i].type == girl_type) return NAMES[i].name;
+    return NULL;
+}
+
 static int girl_shape(int shape, unsigned girl_type)
 {
     if (shape >= NATURAL) return shape;
@@ -126,7 +138,8 @@ static const RecompCameraSettingRow CAMERA_ROWS[] = {
     RECOMP_CAMERA_SETTING_TIME_OF_DAY, RECOMP_CAMERA_SETTING_LIGHT_ANGLE, RECOMP_CAMERA_SETTING_LIGHT_STRENGTH,
     RECOMP_CAMERA_SETTING_RIM_LIGHT, RECOMP_CAMERA_SETTING_FILL_LIGHT, RECOMP_CAMERA_SETTING_OCCLUSION,
 }, GIRLS_ROWS[] = {
-    RECOMP_CAMERA_SETTING_POSE, RECOMP_CAMERA_SETTING_MOVE_HER, RECOMP_CAMERA_SETTING_EYE_CONTACT,
+    RECOMP_CAMERA_SETTING_POSE, RECOMP_CAMERA_SETTING_MOVE_HER, RECOMP_CAMERA_SETTING_POSE_SLOT,
+    RECOMP_CAMERA_SETTING_POSE_KEEP, RECOMP_CAMERA_SETTING_POSE_HOLD, RECOMP_CAMERA_SETTING_EYE_CONTACT,
     RECOMP_CAMERA_SETTING_FACES, RECOMP_CAMERA_SETTING_EYES, RECOMP_CAMERA_SETTING_MOUTH,
     RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_HIDE_BALL,
@@ -300,6 +313,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
         break;
     case RECOMP_CAMERA_SETTING_MOVE_HER:
         if (steps % 2 != 0) settings->move_her = !settings->move_her;
+        break;
+    case RECOMP_CAMERA_SETTING_POSE_SLOT:
+        settings->pose_slot = (unsigned)wrap((int)settings->pose_slot + steps, 8);
         break;
     case RECOMP_CAMERA_SETTING_RIM_LIGHT:
         settings->rim_light = (unsigned)wrap((int)settings->rim_light + steps, RIM_COUNT);

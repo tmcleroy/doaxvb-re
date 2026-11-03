@@ -16,7 +16,7 @@ static void check(bool ok, const char *what)
 
 int main(void)
 {
-    RecompCameraStore kept;
+    static RecompCameraStore kept;
     memset(&kept, 0, sizeof kept);
     recomp_camera_settings_default(&kept.settings);
     kept.settings.depth_of_field = true;
@@ -37,13 +37,17 @@ int main(void)
     view.position[0] = 9.0f;
     recomp_camera_path_add(&kept.path, &view);
 
-    char text[16384];
+    kept.poses[3].used = true;
+    kept.poses[3].type = 14u;
+    kept.poses[3].bones[2][13] = 1.25f;
+    kept.poses[3].bones[2][15] = 1.0f;
+    static char text[262144];
     const size_t length = recomp_camera_store_write(&kept, text, sizeof text);
     check(length > 0u && length < sizeof text, "writes the store");
     check(recomp_camera_store_write(&kept, text, 16u) == 0u, "says when it does not fit");
     recomp_camera_store_write(&kept, text, sizeof text);
 
-    RecompCameraStore read;
+    static RecompCameraStore read;
     memset(&read, 0, sizeof read);
     recomp_camera_settings_default(&read.settings);
     recomp_camera_store_read(text, &read);
@@ -56,8 +60,11 @@ int main(void)
     check(read.path.count == 2u && read.path.looked[0] && !read.path.looked[1] &&
         read.path.looks[0].hour == 18.0f && read.path.keys[1].position[0] == 9.0f, "the path and its looks come back");
 
+    check(read.poses[3].used && read.poses[3].type == 14u && read.poses[3].bones[2][13] == 1.25f &&
+        !read.poses[0].used, "the pose library comes back");
+
     /* Out of range, unknown and broken lines. */
-    RecompCameraStore odd;
+    static RecompCameraStore odd;
     memset(&odd, 0, sizeof odd);
     recomp_camera_settings_default(&odd.settings);
     recomp_camera_store_read("slow 99\nsaturation 500\nnot_a_setting 3\nspot 7 1 2 3 4 5 6 7 8\nfocus_distance nan\n"
