@@ -371,8 +371,8 @@ the sticks, WASD and the right mouse button still fly.
 | Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
 | Faces | The same for every girl, or each girl her own (Eyes and Mouth then set the chosen girl's) |
-| Eyes | Natural (blinking), Open, Closed, Wink |
-| Mouth | Natural, Closed, Slight smile, Lips parted, Teeth, Open, Round, Wide open, Pursed |
+| Eyes | Natural (blinking), Open, Closed, Wink (not Christie) |
+| Mouth | Natural, Closed, Slight smile, Lips apart, Teeth, Open, Round, Wide open, Pursed, Grin (a girl without one keeps her own face) |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -551,11 +551,18 @@ mesh (`docs/body-morph.md`) with two blend records in her block at
 (`0x00064FD0`, `body_morph_adapter.c`) is given the held shape in place of
 the game's and marked to blend again, and the game's own record is put back
 after, so its own animation returns as soon as the row goes back to
-Natural. The shapes were identified on Kasumi by holding each in a frozen
-scene: eyes 0 open, 1 closed, 4 a wink (2 is another closed, 3 and 5 other
-open eyes); mouth 0 closed, 1 open (the game's talking shape), 2 teeth,
-3 pursed, 4 a thin open line, 5 round, 6 lips parted, 7 a wider closed
-mouth, 8 a slight smile, 9 wide open. The blend runs in a frozen scene too.
+Natural. The girls' face sets differ (eyes 2 to 7 shapes, mouths 7 to 15), so the
+shapes were found by holding each shape of each girl in a frozen scene and
+photographing her face. Every girl begins the same: eyes 0 open and 1 closed
+(the game blinks between them); mouth 0 closed, 1 open (the game's talking
+shape), 2 teeth, 3 pursed, 4 lips apart, 5 round. The rest are hers, looked
+up by her type (the byte at +1 of her state record, `GIRL_SHAPES` in
+`camera_settings.c`): a wink is Helena's 2, Kasumi's 4, Tina's 2, Lei
+Fang's 6, Ayane's 4, Hitomi's 2 and Lisa's 2 (Christie has only open and
+closed); a slight smile Helena's, Kasumi's and Hitomi's 8 and Lei Fang's 12;
+wide open Helena's and Kasumi's 9 and Hitomi's 6; a grin Lei Fang's 11 and
+Lisa's 6. A girl without the shape keeps her own face. Tina's mouth was not
+framed in that run, so hers rely on the shared first six. The blend runs in a frozen scene too.
 
 Move her places the chosen girl elsewhere for a picture: her offset along the
 ground and turn about her hips are applied to her bones after each skeleton

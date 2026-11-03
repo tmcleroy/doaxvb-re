@@ -1523,10 +1523,12 @@ void recomp_free_camera_overlay(bool viewer)
     apply_studio_lights();
     int eyes[4] = {-1, -1, -1, -1}, mouth[4] = {-1, -1, -1, -1};
     for (unsigned girl = 0u; girl < 4u && state.active && state.started; ++girl) {
+        // Her type picks her own shapes (camera_settings.c).
+        const unsigned type = *recomp_memory(0x004d6ff1u + girl * 0xbcu, 1u);
         if (state.settings.face_each)
-            recomp_camera_settings_face_shapes(state.girl_eyes[girl], state.girl_mouth[girl], &eyes[girl], &mouth[girl]);
+            recomp_camera_settings_face_shapes(state.girl_eyes[girl], state.girl_mouth[girl], type, &eyes[girl], &mouth[girl]);
         else
-            recomp_camera_settings_face(&state.settings, &eyes[girl], &mouth[girl]);
+            recomp_camera_settings_face(&state.settings, type, &eyes[girl], &mouth[girl]);
     }
     recomp_body_morph_hold_faces(eyes, mouth);
     apply_hiding();

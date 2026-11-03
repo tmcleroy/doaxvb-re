@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 static const float F_NUMBERS[] = {1.4f, 2.0f, 2.8f, 4.0f, 5.6f, 8.0f, 11.0f, 16.0f, 22.0f};
@@ -16,31 +17,63 @@ static const float MAX_ROLL = 45.0f;
 /* Half hours from 06:00 to 22:00. */
 static const unsigned TIME_STEPS = 33u;
 
-/* Face shapes to hold, by their number in the girls' eye and mouth sets
-   (docs/free-camera.md), -1 for the game's own. */
+/* Face shapes to hold. Every girl's face morph begins the same (eyes: 0
+   open, 1 closed, which the game blinks between; mouth: 0 closed, 1 open,
+   2 teeth, 3 pursed, 4 lips apart, 5 round), but her later shapes are her
+   own: a choice marked PER_GIRL looks hers up by her type (the byte at +1
+   of her state record), and a girl without it keeps her own face. Found by
+   holding each shape of each girl in a frozen scene (docs/free-camera.md). */
+enum { NATURAL = -1, WINK = -2, SMILE = -3, WIDE_OPEN = -4, GRIN = -5 };
 static const struct {
     const char *name;
     int shape;
 } EYES[] = {
-    {"Natural (blinking)", -1}, {"Open", 0}, {"Closed", 1}, {"Wink", 4},
+    {"Natural (blinking)", NATURAL}, {"Open", 0}, {"Closed", 1}, {"Wink", WINK},
 }, MOUTHS[] = {
-    {"Natural", -1}, {"Closed", 0}, {"Slight smile", 8}, {"Lips parted", 6}, {"Teeth", 2},
-    {"Open", 1}, {"Round", 5}, {"Wide open", 9}, {"Pursed", 3},
+    {"Natural", NATURAL}, {"Closed", 0}, {"Slight smile", SMILE}, {"Lips apart", 4}, {"Teeth", 2},
+    {"Open", 1}, {"Round", 5}, {"Wide open", WIDE_OPEN}, {"Pursed", 3}, {"Grin", GRIN},
 };
 enum {
     EYES_COUNT = sizeof EYES / sizeof EYES[0],
     MOUTH_COUNT = sizeof MOUTHS / sizeof MOUTHS[0],
 };
 
-void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, int *eyes, int *mouth)
+/* Each girl's own shapes, by type; -1 where she has none. */
+static const struct {
+    uint8_t type;
+    int wink, smile, wide_open, grin;
+} GIRL_SHAPES[] = {
+    {1, 2, 8, 9, -1},     /* Helena */
+    {5, 4, 8, 9, -1},     /* Kasumi */
+    {7, 2, -1, -1, -1},   /* Tina */
+    {12, 6, 12, -1, 11},  /* Lei Fang */
+    {13, 4, -1, -1, -1},  /* Ayane */
+    {14, 2, 8, 6, -1},    /* Hitomi */
+    {15, 2, -1, -1, 6},   /* Lisa */
+    {20, -1, -1, -1, -1}, /* Christie */
+};
+
+static int girl_shape(int shape, unsigned girl_type)
 {
-    *eyes = EYES[eyes_choice % EYES_COUNT].shape;
-    *mouth = MOUTHS[mouth_choice % MOUTH_COUNT].shape;
+    if (shape >= NATURAL) return shape;
+    for (unsigned i = 0u; i < sizeof GIRL_SHAPES / sizeof GIRL_SHAPES[0]; ++i) {
+        if (GIRL_SHAPES[i].type != girl_type) continue;
+        return shape == WINK ? GIRL_SHAPES[i].wink : shape == SMILE ? GIRL_SHAPES[i].smile
+            : shape == WIDE_OPEN ? GIRL_SHAPES[i].wide_open : GIRL_SHAPES[i].grin;
+    }
+    return NATURAL;
 }
 
-void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth)
+void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, unsigned girl_type,
+    int *eyes, int *mouth)
 {
-    recomp_camera_settings_face_shapes(settings->eyes, settings->mouth, eyes, mouth);
+    *eyes = girl_shape(EYES[eyes_choice % EYES_COUNT].shape, girl_type);
+    *mouth = girl_shape(MOUTHS[mouth_choice % MOUTH_COUNT].shape, girl_type);
+}
+
+void recomp_camera_settings_face(const RecompCameraSettings *settings, unsigned girl_type, int *eyes, int *mouth)
+{
+    recomp_camera_settings_face_shapes(settings->eyes, settings->mouth, girl_type, eyes, mouth);
 }
 
 /* Rim light colours (lighting her from behind, so her edges shine). */

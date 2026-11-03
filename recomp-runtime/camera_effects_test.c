@@ -65,6 +65,19 @@ int main(void)
     unsigned once = 0u;
     for (unsigned r = 0u; r < RECOMP_CAMERA_SETTING_COUNT; ++r) once += seen[r] == 1u;
     check(once == RECOMP_CAMERA_SETTING_COUNT, "every row is on one page");
+
+    /* Face shapes: shared ones the same for every girl, her own by her type. */
+    int eyes = 0, mouth = 0;
+    recomp_camera_settings_face_shapes(2u, 1u, 20u, &eyes, &mouth);
+    check(eyes == 1 && mouth == 0, "closed eyes and a closed mouth are shapes 1 and 0 on everyone");
+    recomp_camera_settings_face_shapes(3u, 2u, 5u, &eyes, &mouth);
+    check(eyes == 4 && mouth == 8, "Kasumi's wink and smile");
+    recomp_camera_settings_face_shapes(3u, 2u, 12u, &eyes, &mouth);
+    check(eyes == 6 && mouth == 12, "Lei Fang's wink and smile");
+    recomp_camera_settings_face_shapes(3u, 2u, 20u, &eyes, &mouth);
+    check(eyes == -1 && mouth == -1, "Christie has no wink or smile: her own face");
+    recomp_camera_settings_face_shapes(3u, 0u, 99u, &eyes, &mouth);
+    check(eyes == -1 && mouth == -1, "an unknown girl keeps her own face");
     recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD, 1, &fov, 0.0f);
     recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
     check(drawn.active && drawn.depth_of_field && drawn.focus == RECOMP_CAMERA_FOCUS_SUBJECT && drawn.aperture == 2.0f,

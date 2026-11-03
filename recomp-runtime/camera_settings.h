@@ -139,11 +139,12 @@ unsigned recomp_camera_settings_page_count(void);
 const RecompCameraSettingsPage *recomp_camera_settings_page(unsigned page);
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);
-/* The eye and mouth shapes held on every girl (body_morph_adapter.h), -1
-   for the game's own. */
-void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth);
+/* The eye and mouth shapes to hold on a girl of this type (the byte at +1
+   of her state record; body_morph_adapter.h), -1 for her own. */
+void recomp_camera_settings_face(const RecompCameraSettings *settings, unsigned girl_type, int *eyes, int *mouth);
 /* The same for Eyes and Mouth choices given by their places in the rows. */
-void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, int *eyes, int *mouth);
+void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, unsigned girl_type,
+    int *eyes, int *mouth);
 /* The rim light's colour, false when it is off. */
 bool recomp_camera_settings_rim(const RecompCameraSettings *settings, float rgb[3]);
 /* Moves a row by `steps` (negative goes back). The field of view row changes
