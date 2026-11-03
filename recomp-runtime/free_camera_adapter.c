@@ -120,6 +120,8 @@ static const float FRAME_LIFT = 0.15f;
 static const float FRAME_FOV = 0.75f;
 /* Turntable: radians a second, a turn in about 18 seconds. */
 static const float TURNTABLE_RATE = 0.35f;
+/* How fast the tracked point catches up with her, a second. */
+static const float TRACK_RATE = 6.0f;
 /* The free camera steps once per presented frame. */
 static const float FRAME_SECONDS = 1.0f / 60.0f;
 
@@ -190,6 +192,10 @@ static struct {
     RecompCameraPath path;
     bool playing;
     unsigned play_frames;
+    /* Tracking her (the Track her row): the point followed, smoothed, and
+       for following, the camera's place from it. */
+    bool tracking, following;
+    float track_point[3], track_offset[3];
     /* Pictures drawn for each frame shown: more than one with motion blur. */
     unsigned blur;
     /* Slow motion froze the scene, and frames shown since its last step. */
@@ -311,6 +317,7 @@ static bool intercept_screenshot(void);
 static void frame_started(void);
 static void draw_viewed(const float view[16]);
 static void scene_runs(void);
+static void step_tracked(const RecompFreeCameraControls *controls, float seconds);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
@@ -903,7 +910,7 @@ static void build_camera(void)
                     recomp_free_camera_orbit_step(&state.camera, &state.orbit, &controls, spin, (float)seconds);
             } else {
                 state.orbiting = false;
-                recomp_free_camera_step(&state.camera, &controls, (float)seconds);
+                step_tracked(&controls, (float)seconds);
             }
             state.stepped_frame = frame;
             state.stepped_seconds = now;
@@ -950,6 +957,36 @@ static void build_camera(void)
     else sub_00023B10();
     if (fly && state.started) turn_view(object);
 
+}
+
+/* Free flight, and with Track her on the chosen girl kept in view: the
+   camera aims at her (just above her hips), and following, it moves with her
+   too, at the place it was flown to from her. The point she is tracked by
+   is smoothed (TRACK_RATE a second), so her steps do not shake the picture. */
+static void step_tracked(const RecompFreeCameraControls *controls, float seconds)
+{
+    float hips[3];
+    const bool track = state.settings.track != 0u && recomp_actor_pose_focus(hips);
+    if (!track) {
+        state.tracking = state.following = false;
+        recomp_free_camera_step(&state.camera, controls, seconds);
+        return;
+    }
+    hips[1] += FRAME_LIFT;
+    if (!state.tracking) memcpy(state.track_point, hips, sizeof hips);
+    const float k = 1.0f - expf(-TRACK_RATE * seconds);
+    for (unsigned i = 0u; i < 3u; ++i) state.track_point[i] += (hips[i] - state.track_point[i]) * k;
+    state.tracking = true;
+    const bool follow = state.settings.track == 2u;
+    if (follow && !state.following)
+        for (unsigned i = 0u; i < 3u; ++i) state.track_offset[i] = state.camera.position[i] - state.track_point[i];
+    state.following = follow;
+    if (follow)
+        for (unsigned i = 0u; i < 3u; ++i) state.camera.position[i] = state.track_point[i] + state.track_offset[i];
+    recomp_free_camera_step(&state.camera, controls, seconds);
+    if (follow)
+        for (unsigned i = 0u; i < 3u; ++i) state.track_offset[i] = state.camera.position[i] - state.track_point[i];
+    recomp_free_camera_look_at(&state.camera, state.track_point);
 }
 
 static bool same_matrix(const float a[16], const float b[16])

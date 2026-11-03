@@ -15,7 +15,8 @@
   f-number, field of view, roll, colour filters, vignette, film grain and
   letterbox bars. The effects show on the window and in screenshots, on
   macOS and Linux so far. The list can also orbit round the girl in focus
-  (by hand or as a turntable), hide the ball or the other girls, and take
+  (by hand or as a turntable), track a girl (aim at her, or follow her),
+  hide the ball or the other girls, and take
   screenshots at up to four times the frame's size, drawn at that size in
   one frame. A Time
   of day row relights the girls and the scene's lights, moves the sun the

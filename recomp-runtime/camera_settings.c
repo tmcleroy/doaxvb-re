@@ -89,6 +89,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_LETTERBOX:
         settings->letterbox = (unsigned)wrap((int)settings->letterbox + steps, LETTERBOX_COUNT);
         break;
+    case RECOMP_CAMERA_SETTING_TRACK:
+        settings->track = (unsigned)wrap((int)settings->track + steps, 3);
+        break;
     case RECOMP_CAMERA_SETTING_ORBIT:
         settings->orbit = (RecompCameraOrbit)wrap((int)settings->orbit + steps, RECOMP_CAMERA_ORBIT_COUNT);
         break;
@@ -196,6 +199,11 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_LETTERBOX:
         snprintf(text, size, "Letterbox: %s", LETTERBOXES[settings->letterbox % LETTERBOX_COUNT].name);
         break;
+    case RECOMP_CAMERA_SETTING_TRACK: {
+        static const char *const names[3] = {"Off", "Look at her", "Follow her"};
+        snprintf(text, size, "Track her: %s", names[settings->track % 3u]);
+        break;
+    }
     case RECOMP_CAMERA_SETTING_ORBIT: {
         static const char *const names[RECOMP_CAMERA_ORBIT_COUNT] = {"Off", "Around the focus", "Turntable"};
         snprintf(text, size, "Orbit: %s", names[settings->orbit % RECOMP_CAMERA_ORBIT_COUNT]);
