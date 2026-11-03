@@ -2535,7 +2535,7 @@ bool sunNearCamera(SdlSunShadow &sun, const RecompD3dPresenterDrawCommand &draw)
     std::memcpy(sun.tested_camera, draw.view_projection, sizeof sun.tested_camera);
     float inverse[16], eye[3], forward[3];
     sun.tested_near = false;
-    if (!sunInverse(draw.view_projection, inverse) || !sunViewRay(inverse, eye, forward)) return false;
+    if (!matrixInverse(draw.view_projection, inverse) || !sunViewRay(inverse, eye, forward)) return false;
     float distance = 0, facing = 0;
     for (unsigned i = 0; i < 3; ++i) {
         distance += (eye[i] - sun.map_eye[i]) * (eye[i] - sun.map_eye[i]);
