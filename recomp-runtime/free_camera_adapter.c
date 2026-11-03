@@ -3,6 +3,7 @@
 #include "input_host_win32.h"
 #include "scene_freeze_adapter.h"
 #include "actor_pose_adapter.h"
+#include "body_morph_adapter.h"
 #include "suit_switch_adapter.h"
 #include "viewer_menu_adapter.h"
 #include "overlay_text.h"
@@ -120,6 +121,9 @@ static const float FRAME_LIFT = 0.15f;
 static const float FRAME_FOV = 0.75f;
 /* Turntable: radians a second, a turn in about 18 seconds. */
 static const float TURNTABLE_RATE = 0.35f;
+/* Moving her: world units and radians a second at full stick. */
+static const float MOVE_HER_SPEED = 1.5f;
+static const float MOVE_HER_TURN = 1.8f;
 /* How fast the tracked point catches up with her, a second. */
 static const float TRACK_RATE = 6.0f;
 /* The free camera steps once per presented frame. */
@@ -171,7 +175,7 @@ static struct {
     /* The camera settings list (Tab or BACK alone). */
     bool settings_open, settings_key_held, back_held, back_combo, settings_ready;
     int setting_row;
-    bool reset_row_held;
+    bool reset_row_held, put_back_held;
     /* The field of view the camera started with, for a reset. */
     float start_fov;
     HeldRepeat row_repeat, value_repeat;
@@ -307,6 +311,7 @@ static void set_active(bool active)
         state.playing = false;
         /* Putting the camera away hands the scene back, running. */
         recomp_actor_pose_release();
+        recomp_actor_pose_place_reset(true);
         recomp_suit_switch_forget();
         recomp_scene_freeze_set(false);
         recomp_scene_freeze_set_overlay_hidden(false);
@@ -321,6 +326,7 @@ static void frame_started(void);
 static void draw_viewed(const float view[16]);
 static void scene_runs(void);
 static void step_tracked(const RecompFreeCameraControls *controls, float seconds);
+static void apply_studio_lights(void);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
@@ -428,6 +434,7 @@ static void reset_settings(void)
 {
     recomp_camera_settings_default(&state.settings);
     if (state.started && state.start_fov > 0.0f) state.camera.fov = state.start_fov;
+    recomp_actor_pose_place_reset(true);
     fprintf(stderr, "recomp free camera: settings reset\n");
 }
 
@@ -491,6 +498,10 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
     }
+    const bool put_back = state.setting_row == RECOMP_CAMERA_SETTING_MOVE_HER &&
+        gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
+    if (put_back && !state.put_back_held) recomp_actor_pose_place_reset(false);
+    state.put_back_held = put_back;
     const bool reset = state.setting_row == RECOMP_CAMERA_SETTING_RESET &&
         gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
     if (reset && !state.reset_row_held) reset_settings();
@@ -720,12 +731,15 @@ static void read_controls(RecompFreeCameraControls *controls)
     controls->fast = analog(pad, ANALOG_A) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_SHIFT);
     controls->slow = analog(pad, ANALOG_B) || recomp_input_host_key(RECOMP_INPUT_HOST_KEY_CONTROL);
 
-    /* Debug: RECOMP_FREE_CAMERA_DRIFT=right,up,forward,turn,pitch adds a
-       constant input, so a scripted run can move the camera. */
+    /* Debug: RECOMP_FREE_CAMERA_DRIFT=right,up,forward,turn,pitch[,frame]
+       adds a constant input, from that frame on if given, so a scripted run
+       can move the camera. */
     const char *drift = setting("RECOMP_FREE_CAMERA_DRIFT");
     float add[5] = {0};
-    if (drift != NULL && sscanf(drift, "%f,%f,%f,%f,%f",
-        &add[0], &add[1], &add[2], &add[3], &add[4]) == 5) {
+    unsigned from = 0u;
+    if (drift != NULL && sscanf(drift, "%f,%f,%f,%f,%f,%u",
+        &add[0], &add[1], &add[2], &add[3], &add[4], &from) >= 5 &&
+        recomp_d3d_frame_adapter_swap_counter() >= from) {
         for (unsigned i = 0u; i < 3u; ++i) controls->move[i] += add[i];
         controls->look[0] += add[3];
         controls->look[1] += add[4];
@@ -918,6 +932,13 @@ static void build_camera(void)
                 const float spin = state.settings.orbit == RECOMP_CAMERA_ORBIT_TURNTABLE ? TURNTABLE_RATE : 0.0f;
                 if (state.orbiting)
                     recomp_free_camera_orbit_step(&state.camera, &state.orbit, &controls, spin, (float)seconds);
+            } else if (state.settings.move_her) {
+                /* The sticks move and turn her; the camera stays. */
+                state.orbiting = false;
+                const float scale = controls.fast ? 4.0f : controls.slow ? 0.25f : 1.0f;
+                const float step = MOVE_HER_SPEED * scale * (float)seconds;
+                recomp_actor_pose_place(controls.move[0] * step, controls.move[2] * step, state.camera.heading,
+                    -controls.look[0] * MOVE_HER_TURN * scale * (float)seconds);
             } else {
                 state.orbiting = false;
                 step_tracked(&controls, (float)seconds);
@@ -967,6 +988,60 @@ static void build_camera(void)
     else sub_00023B10();
     if (fly && state.started) turn_view(object);
 
+}
+
+/* The rim and fill lights, on the characters only (the draw adapter adds
+   them after the game's lights), placed by the camera: the rim light from
+   behind her, above and to one side, so her hair, shoulders and an edge
+   catch it; the
+   fill from the camera's side and a little above, softening her shadows. */
+static void apply_studio_lights(void)
+{
+    RecompD3dExtraLight lights[RECOMP_D3D_EXTRA_LIGHTS];
+    uint32_t count = 0u;
+    float target[3], forward[3], right[3];
+    const bool flying = state.active && state.started && state.settings_ready;
+    if (flying) {
+        recomp_free_camera_target(&state.camera, target);
+        float length = 0.0f;
+        for (unsigned i = 0u; i < 3u; ++i) {
+            forward[i] = target[i] - state.camera.position[i];
+            length += forward[i] * forward[i];
+        }
+        length = sqrtf(length);
+        if (length > 1e-6f)
+            for (unsigned i = 0u; i < 3u; ++i) forward[i] /= length;
+        /* Level and square to the line of sight, to one side. */
+        right[0] = forward[2];
+        right[1] = 0.0f;
+        right[2] = -forward[0];
+        float rgb[3];
+        if (length > 1e-6f && recomp_camera_settings_rim(&state.settings, rgb)) {
+            /* Behind her (level, whatever the camera's pitch), above and a
+               little to the side: lit only by diffuse light, edges catch it
+               where they turn up or away. */
+            RecompD3dExtraLight *rim = &lights[count++];
+            const float level = sqrtf(forward[0] * forward[0] + forward[2] * forward[2]);
+            const float back[2] = {level > 1e-4f ? forward[0] / level : 0.0f, level > 1e-4f ? forward[2] / level : 0.0f};
+            const float toward[3] = {0.7f * back[0] + 0.5f * right[0], 0.9f, 0.7f * back[1] + 0.5f * right[2]};
+            const float size = sqrtf(toward[0] * toward[0] + toward[1] * toward[1] + toward[2] * toward[2]);
+            for (unsigned i = 0u; i < 3u; ++i) {
+                rim->toward[i] = toward[i] / size;
+                rim->color[i] = rgb[i];
+            }
+        }
+        if (length > 1e-6f && state.settings.fill_light != 0u) {
+            RecompD3dExtraLight *fill = &lights[count++];
+            const float toward[3] = {-forward[0] + right[0], -forward[1] + 0.3f, -forward[2] + right[2]};
+            const float size = sqrtf(toward[0] * toward[0] + toward[1] * toward[1] + toward[2] * toward[2]);
+            const float strength = 0.1f * (float)state.settings.fill_light;
+            for (unsigned i = 0u; i < 3u; ++i) {
+                fill->toward[i] = toward[i] / size;
+                fill->color[i] = strength;
+            }
+        }
+    }
+    recomp_d3d_draw_set_extra_lights(lights, count);
 }
 
 /* Free flight, and with Track her on the chosen girl kept in view: the
@@ -1347,6 +1422,10 @@ void recomp_free_camera_overlay(bool viewer)
         effects.backdrop = false;
     }
     recomp_camera_effects_publish(&effects);
+    apply_studio_lights();
+    int eyes = -1, mouth = -1;
+    if (state.active && state.started) recomp_camera_settings_face(&state.settings, &eyes, &mouth);
+    recomp_body_morph_hold_face(eyes, mouth);
     apply_hiding();
 }
 #else

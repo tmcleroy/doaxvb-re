@@ -94,6 +94,29 @@ void sub_000AE3F0(void);
 
 /* Rebuilding a frozen scene's skeletons for eye contact. */
 static bool rebuilding_frozen;
+
+/* Where the free camera has put each character: moved along the ground and
+   turned about her hips, applied to her bones after each build. `pivot` is
+   her hips before the move, as last built; `placement_dirty` asks a frozen
+   scene to build her again. */
+static struct {
+    bool set;
+    float offset[2];  /* x, z */
+    float turn;       /* radians about the vertical */
+    float pivot[3];
+} placed[4];
+static bool placement_dirty;
+
+/* Turns (x, z) about the vertical by `angle`, as the key light turns. */
+static void turn_level(float *x, float *z, float angle)
+{
+    const float c = cosf(angle), s = sinf(angle), a = *x, b = *z;
+    *x = c * a + s * b;
+    *z = -s * a + c * b;
+}
+
+/* Moves a just-built skeleton to where she was put. */
+static void place_bones(uint32_t actor);
 void sub_000636D0(void);
 
 static struct {
@@ -494,17 +517,29 @@ static void build_skeleton(void)
 {
     const uint32_t actor = recomp_runtime.registers.eax;
     const uint32_t state_address = LOOK_FIRST + actor * LOOK_STRIDE;
-    const bool skipped = actor < ACTOR_COUNT && recomp_scene_freeze_holding();
+    /* A frozen scene's build is skipped (build_skeleton_inner), unless the
+       free camera builds it again (recomp_actor_pose_look_while_frozen). */
+    const bool skipped = actor < ACTOR_COUNT && recomp_scene_freeze_holding() && !rebuilding_frozen;
     const bool looking = look.on && actor < ACTOR_COUNT && !skipped;
     float ball[3], weight = 0.0f;
     if (looking) {
         recomp_guest_load(ball, 0x00416630u, sizeof ball);
         recomp_guest_load(&weight, state_address + 0x164u, sizeof weight);
         const float full = 1.0f;
-        recomp_guest_store(0x00416630u, look.eye, sizeof look.eye);
+        /* A girl who was moved looks from where the game thinks she is. */
+        float eye[3] = {look.eye[0], look.eye[1], look.eye[2]};
+        if (placed[actor].set) {
+            float x = eye[0] - placed[actor].pivot[0] - placed[actor].offset[0];
+            float z = eye[2] - placed[actor].pivot[2] - placed[actor].offset[1];
+            turn_level(&x, &z, -placed[actor].turn);
+            eye[0] = placed[actor].pivot[0] + x;
+            eye[2] = placed[actor].pivot[2] + z;
+        }
+        recomp_guest_store(0x00416630u, eye, sizeof eye);
         recomp_guest_store(state_address + 0x164u, &full, sizeof full);
     }
     build_skeleton_inner();
+    if (actor < ACTOR_COUNT && !skipped) place_bones(actor);
     if (looking) {
         recomp_guest_store(0x00416630u, ball, sizeof ball);
         recomp_guest_store(state_address + 0x164u, &weight, sizeof weight);
@@ -525,7 +560,8 @@ static void build_skeleton(void)
    each bone through the scratch matrix at 0x00A24190, which is put back. */
 void recomp_actor_pose_look_while_frozen(void)
 {
-    if (!look.on || !recomp_scene_freeze_holding() || history.back != 0u) return;
+    if ((!look.on && !placement_dirty) || !recomp_scene_freeze_holding() || history.back != 0u) return;
+    placement_dirty = false;
     const RecompRegisters registers = recomp_runtime.registers;
     RecompFpuContext fpu;
     recomp_fpu_context_save(&fpu);
@@ -551,6 +587,46 @@ void recomp_actor_pose_look_while_frozen(void)
     recomp_guest_store(0x00A24190u, scratch, sizeof scratch);
     recomp_runtime.registers = registers;
     recomp_fpu_context_restore(&fpu);
+}
+
+static void place_bones(uint32_t actor)
+{
+    if (!placed[actor].set) return;
+    recomp_guest_load(placed[actor].pivot, bone_of(actor, 0u) + 12u * sizeof(float), sizeof placed[actor].pivot);
+    const float *p = placed[actor].pivot, turn = placed[actor].turn;
+    for (uint32_t bone = 0u; bone < BONE_COUNT; ++bone) {
+        float m[16];
+        const uint32_t address = bone_of(actor, bone);
+        recomp_guest_load(m, address, sizeof m);
+        if (m[15] == 0.0f) continue;
+        for (unsigned row = 0u; row < 3u; ++row) turn_level(&m[row * 4u], &m[row * 4u + 2u], turn);
+        float x = m[12] - p[0], z = m[14] - p[2];
+        turn_level(&x, &z, turn);
+        m[12] = p[0] + x + placed[actor].offset[0];
+        m[14] = p[2] + z + placed[actor].offset[1];
+        recomp_guest_store(address, m, sizeof m);
+    }
+}
+
+void recomp_actor_pose_place(float right, float forward, float heading, float turn)
+{
+    const uint32_t actor = pose.actor;
+    if (!active(actor)) return;
+    /* Along the ground, relative to the camera (free_camera.c): its level
+       forward is (sin, cos) of its heading, its right (-cos, sin). */
+    const float c = cosf(heading), s = sinf(heading);
+    placed[actor].offset[0] += right * -c + forward * s;
+    placed[actor].offset[1] += right * s + forward * c;
+    placed[actor].turn = remainderf(placed[actor].turn + turn, 6.28318531f);
+    placed[actor].set = true;
+    placement_dirty = true;
+}
+
+void recomp_actor_pose_place_reset(bool all)
+{
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor)
+        if (all || actor == pose.actor) memset(&placed[actor], 0, sizeof placed[actor]);
+    placement_dirty = true;
 }
 
 unsigned recomp_actor_pose_history_step(int step)
@@ -588,6 +664,19 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+void recomp_actor_pose_place(float right, float forward, float heading, float turn)
+{
+    (void)right;
+    (void)forward;
+    (void)heading;
+    (void)turn;
+}
+
+void recomp_actor_pose_place_reset(bool all)
+{
+    (void)all;
+}
+
 void recomp_actor_pose_look_while_frozen(void)
 {
 }

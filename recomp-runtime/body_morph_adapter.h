@@ -14,6 +14,12 @@ extern "C" {
    call. */
 RecompFunction recomp_body_morph_lookup_manual(uint32_t guest_address);
 
+/* Holds every girl's eyes and mouth at one of their face shapes (the free
+   camera's Eyes and Mouth rows): the shape's number in her eye set (6
+   shapes: 0 open, 1 closed, 4 a wink) or mouth set (10), or -1 to leave
+   the game's own. */
+void recomp_body_morph_hold_face(int eyes, int mouth);
+
 #ifdef __cplusplus
 }
 #endif

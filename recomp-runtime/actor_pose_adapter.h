@@ -39,6 +39,13 @@ bool recomp_actor_pose_character_world(const float world[16]);
 /* With eye contact on in a frozen scene, builds the characters' skeletons
    again so they look at the camera; once at the start of a frozen frame. */
 void recomp_actor_pose_look_while_frozen(void);
+/* Moves the chosen character along the ground (`right` and `forward` in
+   world units, relative to a camera of this heading) and turns her by `turn`
+   radians about her hips; only her drawn skeleton moves, not the game's
+   idea of where she is. */
+void recomp_actor_pose_place(float right, float forward, float heading, float turn);
+/* Puts the chosen character (or all) back where the game has her. */
+void recomp_actor_pose_place_reset(bool all);
 /* Characters whose bit is set are moved far below the ground. */
 void recomp_actor_pose_set_hidden(uint32_t mask);
 /* Where the chosen character's hips are, for the camera to face. */

@@ -32,7 +32,10 @@
   motion (1/2 to 1/8, blended between game frames, so videos are smooth
   too), motion blur (4 to 16 pictures a frame) and stepping the girls' poses back and forth through the last
   600 frames help find the moment, and eye contact turns the girls' heads
-  (and eyes) toward the camera through the game's own look-at. See
+  (and eyes) toward the camera through the game's own look-at, paused or
+  not. The girls' eyes (open, closed, a wink) and mouths (a smile, open,
+  and more) can be held, a girl can be moved and turned for a picture, and
+  a rim light and a fill light light the girls. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27

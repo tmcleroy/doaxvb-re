@@ -343,6 +343,14 @@ slot_trace_done:
    remaining weight. The game's matrix table selects WORLD0..WORLD3. Also
    records the world and view-projection matrices for host ray tracing. */
 static RecompD3dDrawCharacterTest character_test;
+static RecompD3dExtraLight extra_lights[RECOMP_D3D_EXTRA_LIGHTS];
+static uint32_t extra_light_count;
+
+void recomp_d3d_draw_set_extra_lights(const RecompD3dExtraLight *lights, uint32_t count)
+{
+    extra_light_count = count < RECOMP_D3D_EXTRA_LIGHTS ? count : RECOMP_D3D_EXTRA_LIGHTS;
+    if (extra_light_count != 0u) memcpy(extra_lights, lights, extra_light_count * sizeof *lights);
+}
 
 void recomp_d3d_draw_set_character_test(RecompD3dDrawCharacterTest test)
 {
@@ -878,6 +886,15 @@ static void attach_directional_lighting(uint32_t device, RecompD3dPresenterDrawC
             else result.ambient_emissive[c] += mat[4+c]*data[9+c];
         }
         ++result.count; light=next;
+    }
+    /* The free camera's rim and fill lights, on the characters only: plain
+       directional lights after the game's, with no specular. */
+    for (uint32_t i = 0; draw->character && i < extra_light_count && result.count < 8; ++i) {
+        for (uint32_t c = 0; c < 3; ++c) {
+            result.directions[result.count][c] = extra_lights[i].toward[c];
+            result.colors[result.count][c] = extra_lights[i].color[c];
+        }
+        ++result.count;
     }
     for (uint32_t i=0; i<=draw->blend_weight_count; ++i) {
         float *world = result.world_transforms[i];

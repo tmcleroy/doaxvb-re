@@ -16,6 +16,49 @@ static const float MAX_ROLL = 45.0f;
 /* Half hours from 06:00 to 22:00. */
 static const unsigned TIME_STEPS = 33u;
 
+/* Face shapes to hold, by their number in the girls' eye and mouth sets
+   (docs/free-camera.md), -1 for the game's own. */
+static const struct {
+    const char *name;
+    int shape;
+} EYES[] = {
+    {"Natural (blinking)", -1}, {"Open", 0}, {"Closed", 1}, {"Wink", 4},
+}, MOUTHS[] = {
+    {"Natural", -1}, {"Closed", 0}, {"Slight smile", 8}, {"Lips parted", 6}, {"Teeth", 2},
+    {"Open", 1}, {"Round", 5}, {"Wide open", 9}, {"Pursed", 3},
+};
+enum {
+    EYES_COUNT = sizeof EYES / sizeof EYES[0],
+    MOUTH_COUNT = sizeof MOUTHS / sizeof MOUTHS[0],
+};
+
+void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth)
+{
+    *eyes = EYES[settings->eyes % EYES_COUNT].shape;
+    *mouth = MOUTHS[settings->mouth % MOUTH_COUNT].shape;
+}
+
+/* Rim light colours (lighting her from behind, so her edges shine). */
+static const struct {
+    const char *name;
+    float rgb[3];
+} RIMS[] = {
+    {"Off", {0.0f, 0.0f, 0.0f}},
+    {"White", {1.1f, 1.1f, 1.1f}},
+    {"Warm", {1.2f, 0.85f, 0.55f}},
+    {"Cool", {0.6f, 0.8f, 1.25f}},
+    {"Pink", {1.2f, 0.55f, 0.85f}},
+    {"Teal", {0.4f, 1.1f, 1.0f}},
+};
+enum { RIM_COUNT = sizeof RIMS / sizeof RIMS[0] };
+
+bool recomp_camera_settings_rim(const RecompCameraSettings *settings, float rgb[3])
+{
+    const unsigned rim = settings->rim_light % RIM_COUNT;
+    memcpy(rgb, RIMS[rim].rgb, sizeof RIMS[rim].rgb);
+    return rim != 0u;
+}
+
 /* Studio backdrops: the scene, or a plain colour behind the characters. */
 static const struct {
     const char *name;
@@ -162,6 +205,21 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_SPEED:
         settings->slow = clamp_index((int)settings->slow + steps, 4u);
         break;
+    case RECOMP_CAMERA_SETTING_EYES:
+        settings->eyes = (unsigned)wrap((int)settings->eyes + steps, EYES_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_MOUTH:
+        settings->mouth = (unsigned)wrap((int)settings->mouth + steps, MOUTH_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_MOVE_HER:
+        if (steps % 2 != 0) settings->move_her = !settings->move_her;
+        break;
+    case RECOMP_CAMERA_SETTING_RIM_LIGHT:
+        settings->rim_light = (unsigned)wrap((int)settings->rim_light + steps, RIM_COUNT);
+        break;
+    case RECOMP_CAMERA_SETTING_FILL_LIGHT:
+        settings->fill_light = clamp_index((int)settings->fill_light + steps, 11u);
+        break;
     case RECOMP_CAMERA_SETTING_MOTION_BLUR:
         settings->motion_blur = clamp_index((int)settings->motion_blur + steps, 4u);
         break;
@@ -180,6 +238,22 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     switch (row) {
     case RECOMP_CAMERA_SETTING_RESET:
         snprintf(text, size, "Reset all camera options: press right");
+        break;
+    case RECOMP_CAMERA_SETTING_EYES:
+        snprintf(text, size, "Eyes: %s", EYES[settings->eyes % EYES_COUNT].name);
+        break;
+    case RECOMP_CAMERA_SETTING_MOUTH:
+        snprintf(text, size, "Mouth: %s", MOUTHS[settings->mouth % MOUTH_COUNT].name);
+        break;
+    case RECOMP_CAMERA_SETTING_MOVE_HER:
+        snprintf(text, size, "Move her: %s", settings->move_her ? "On (sticks move her, A puts her back)" : "Off");
+        break;
+    case RECOMP_CAMERA_SETTING_RIM_LIGHT:
+        snprintf(text, size, "Rim light: %s", RIMS[settings->rim_light % RIM_COUNT].name);
+        break;
+    case RECOMP_CAMERA_SETTING_FILL_LIGHT:
+        if (settings->fill_light == 0u) snprintf(text, size, "Fill light: Off");
+        else snprintf(text, size, "Fill light: %u%%", settings->fill_light * 10u);
         break;
     case RECOMP_CAMERA_SETTING_BACKDROP:
         snprintf(text, size, "Backdrop: %s", BACKDROPS[settings->backdrop % BACKDROP_COUNT].name);

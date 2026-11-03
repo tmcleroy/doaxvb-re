@@ -342,6 +342,8 @@ the sticks, WASD and the right mouse button still fly.
 | Time of day | The stage's own, or 06:00 to 22:00 in half hours ([`time-of-day.md`](time-of-day.md)) |
 | Key light angle | -180 to 180 degrees about the vertical; the sun shadows turn with it |
 | Key light strength | 10% to 300% of the stage's own |
+| Rim light | Off, White, Warm, Cool, Pink, Teal: a light on the girls from behind, above and to one side |
+| Fill light | Off, 10% to 100%: a white light on the girls from the camera's side |
 | Exposure | -2 to +2 stops in quarters |
 | Contrast | -50% to +50% |
 | Saturation | 0% to 200% |
@@ -357,7 +359,10 @@ the sticks, WASD and the right mouse button still fly.
 | Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
 | Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame (Metal and Vulkan) |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
+| Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
+| Eyes | Natural (blinking), Open, Closed, Wink, on every girl |
+| Mouth | Natural, Closed, Slight smile, Lips parted, Teeth, Open, Round, Wide open, Pursed, on every girl |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -501,9 +506,42 @@ builds them again (`recomp_actor_pose_look_while_frozen`), as the game does
 when it pauses its own world: 0x000AF380 with 0x004D56EF set still runs the
 build and the joint banks (0x000AE350, 0x000AE3F0) but does not step the
 animation. Her pose stays as it was (the hips do not move) and her head
-follows the camera. These builds are not added to the pose history, and slow
+follows the camera: in a frozen match with the camera strafing round her, her
+hips went from 87 to 29 degrees off the line to the camera while her head
+stayed within 4 to 7 degrees of it once inside the game's turn limit. These
+builds are not added to the pose history, and slow
 motion and stepped-back poses are left alone. 0x000AE3F0 inverts each bone
 through the scratch matrix at 0x00A24190, which is put back after.
+
+Eyes and Mouth hold a face shape on every girl. A girl's face is a morph
+mesh (`docs/body-morph.md`) with two blend records in her block at
+`0x004C9CA0 + n * 0xBC`: her mouth at `+0x3C` (10 shapes) and her eyes at
+`+0x90` (6 shapes; the game blinks between 0 and 1). The blend
+(`0x00064FD0`, `body_morph_adapter.c`) is given the held shape in place of
+the game's and marked to blend again, and the game's own record is put back
+after, so its own animation returns as soon as the row goes back to
+Natural. The shapes were identified on Kasumi by holding each in a frozen
+scene: eyes 0 open, 1 closed, 4 a wink (2 is another closed, 3 and 5 other
+open eyes); mouth 0 closed, 1 open (the game's talking shape), 2 teeth,
+3 pursed, 4 a thin open line, 5 round, 6 lips parted, 7 a wider closed
+mouth, 8 a slight smile, 9 wide open. The blend runs in a frozen scene too.
+
+Move her places the chosen girl elsewhere for a picture: her offset along the
+ground and turn about her hips are applied to her bones after each skeleton
+build (`place_bones`), so only her drawn skeleton moves, not the game's idea
+of where she is. A frozen scene builds her again once after each change.
+With eye contact, the camera she looks at is moved back into her own frame
+first, so she still looks at it. Reset all, and putting the camera away,
+put every girl back.
+
+The rim and fill lights are directional lights the draw adapter adds after
+the game's own to the characters' lit draws (`recomp_d3d_draw_set_extra_lights`),
+placed from the camera each frame (`apply_studio_lights`): the rim from
+behind her (level, whatever the camera's pitch), above and to one side, so
+the tops of her hair and shoulders and one edge catch it; the fill from the
+camera's side and a little above, so her shadows soften. They light by the
+game's own diffuse model, so a rim light tints the surfaces that face up or
+away rather than drawing a sharp outline.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

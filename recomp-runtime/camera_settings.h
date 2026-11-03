@@ -34,6 +34,8 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_TIME_OF_DAY,
     RECOMP_CAMERA_SETTING_LIGHT_ANGLE,
     RECOMP_CAMERA_SETTING_LIGHT_STRENGTH,
+    RECOMP_CAMERA_SETTING_RIM_LIGHT,
+    RECOMP_CAMERA_SETTING_FILL_LIGHT,
     RECOMP_CAMERA_SETTING_EXPOSURE,
     RECOMP_CAMERA_SETTING_CONTRAST,
     RECOMP_CAMERA_SETTING_SATURATION,
@@ -49,7 +51,10 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_SPEED,
     RECOMP_CAMERA_SETTING_MOTION_BLUR,
     RECOMP_CAMERA_SETTING_POSE,
+    RECOMP_CAMERA_SETTING_MOVE_HER,
     RECOMP_CAMERA_SETTING_EYE_CONTACT,
+    RECOMP_CAMERA_SETTING_EYES,
+    RECOMP_CAMERA_SETTING_MOUTH,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 
@@ -100,6 +105,8 @@ typedef struct RecompCameraSettings {
     unsigned time_of_day; /* 0 the stage's own, else half hours from 05:30 (1 is 06:00) */
     int light_angle;      /* degrees the key light turns about the vertical */
     unsigned light_strength; /* tenths of the key light's own strength (10 is its own) */
+    unsigned rim_light;   /* 0 off, else a colour lighting her from behind (recomp_camera_settings_rim) */
+    unsigned fill_light;  /* tenths of a white light from the camera's side */
     int exposure;         /* quarter stops */
     int contrast;         /* percent added */
     unsigned saturation;  /* tenths (10 is the picture's own) */
@@ -113,9 +120,17 @@ typedef struct RecompCameraSettings {
     unsigned slow;        /* the scene runs one frame in 1, 2, 4 or 8 (index 0 to 3) */
     unsigned motion_blur; /* 0 off, else each frame averages 2 << n pictures (4, 8, 16) */
     unsigned eye_contact; /* 0 off, 1 head, 2 head and eyes */
+    bool move_her;        /* the sticks move and turn the chosen girl, not the camera */
+    unsigned eyes;        /* 0 the game's own (blinking), else held (recomp_camera_settings_face) */
+    unsigned mouth;       /* 0 the game's own, else held */
 } RecompCameraSettings;
 
 void recomp_camera_settings_default(RecompCameraSettings *settings);
+/* The eye and mouth shapes held on every girl (body_morph_adapter.h), -1
+   for the game's own. */
+void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth);
+/* The rim light's colour, false when it is off. */
+bool recomp_camera_settings_rim(const RecompCameraSettings *settings, float rgb[3]);
 /* Moves a row by `steps` (negative goes back). The field of view row changes
    *fov, in radians. `character_focus` is the distance to the chosen
    character, or zero when there is none; manual focus starts from it. */

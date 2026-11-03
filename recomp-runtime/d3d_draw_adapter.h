@@ -28,6 +28,15 @@ uint32_t recomp_d3d_draw_adapter_declined(void);
 /* Called with the view transform of each indexed draw submitted, so a
    caller can tell which camera the scene is drawn with; NULL stops it. */
 typedef void (*RecompD3dDrawViewObserver)(const float view[16]);
+/* Lights added to the characters' lit draws after the game's own (the free
+   camera's rim and fill lights): a direction toward the light, in the world,
+   and its colour. At most RECOMP_D3D_EXTRA_LIGHTS; count 0 for none. */
+enum { RECOMP_D3D_EXTRA_LIGHTS = 2 };
+typedef struct RecompD3dExtraLight {
+    float toward[3];
+    float color[3];
+} RecompD3dExtraLight;
+void recomp_d3d_draw_set_extra_lights(const RecompD3dExtraLight *lights, uint32_t count);
 /* Tells a character's draws by their WORLD matrix (the free camera's
    recomp_actor_pose_character_world); each draw command carries the answer. */
 typedef bool (*RecompD3dDrawCharacterTest)(const float world[16]);

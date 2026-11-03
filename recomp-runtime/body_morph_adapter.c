@@ -218,12 +218,66 @@ static void verified(void)
     free(before); free(theirs); free(mine);
 }
 
-static void blend_record_entry(void)
+/* Each girl's face records, in her block at 0x004C9CA0 + n * 0xBC that
+   0x00064300 visits: +0x3C her mouth (10 shapes), +0x90 her eyes (6; the
+   game blinks between 0 and 1). */
+enum {
+    FACE_FIRST = 0x004C9CA0u,
+    FACE_STRIDE = 0xBCu,
+    FACE_MOUTH = 0x3Cu,
+    FACE_EYES = 0x90u,
+    RECORD_SIZE = 0x24u,
+};
+
+static int held_eyes = -1, held_mouth = -1;
+
+void recomp_body_morph_hold_face(int eyes, int mouth)
+{
+    held_eyes = eyes;
+    held_mouth = mouth;
+}
+
+/* The shape held for this record, or -1. */
+static int held_shape(uint32_t record)
+{
+    if (record < FACE_FIRST || record >= FACE_FIRST + 4u * FACE_STRIDE) return -1;
+    const uint32_t at = (record - FACE_FIRST) % FACE_STRIDE;
+    return at == FACE_EYES ? held_eyes : at == FACE_MOUTH ? held_mouth : -1;
+}
+
+static void blend_entry(void)
 {
     static int verify = -1;
     if (verify < 0) verify = getenv("RECOMP_BODY_MORPH_VERIFY") != NULL;
     if (verify) verified();
     else blend_record();
+}
+
+/* A held face shape is blended in place of the game's, which is put back
+   after, and marked to blend again: held, it is blended each frame; let
+   go, the game's own shape returns at once. */
+static void blend_record_entry(void)
+{
+    const uint32_t record = recomp_runtime.registers.esi;
+    const int shape = held_shape(record);
+    const uint32_t set = shape >= 0 ? load_u(record) & ADDRESS_MASK : 0u;
+    if (set == 0u || (uint32_t)shape >= load_u(set)) {
+        blend_entry();
+        return;
+    }
+    uint8_t game[RECORD_SIZE];
+    memcpy(game, recomp_memory(record, RECORD_SIZE), RECORD_SIZE);
+    const uint32_t pointer = (load_u(set + 0x10u) & ADDRESS_MASK) + 8u * (uint32_t)shape;
+    const uint32_t high = load_u(record + 0x08u) & ~ADDRESS_MASK;
+    const float one = 1.0f, zero = 0.0f;
+    for (uint32_t k = 0u; k < 3u; ++k) store_u(record + 0x08u + 4u * k, pointer | high);
+    memcpy(recomp_memory(record + 0x14u, 4u), &one, 4u);
+    memcpy(recomp_memory(record + 0x18u, 4u), &zero, 4u);
+    memcpy(recomp_memory(record + 0x1Cu, 4u), &zero, 4u);
+    store_b(record + 0x22u, 1u);
+    blend_entry();
+    memcpy(recomp_memory(record + 0x08u, 0x18u), game + 0x08u, 0x18u);
+    store_b(record + 0x22u, 1u);
 }
 
 RecompFunction recomp_body_morph_lookup_manual(uint32_t guest_address)
