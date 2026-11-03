@@ -1295,7 +1295,21 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
                 (unsigned)count, suit_name, recomp_suit_switch_busy() ? " (changing)" : "");
         }
     }
-    recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
+    /* Slow motion and motion blur run a frozen scene a step at a time; say
+       what the picture is doing, not that it is frozen. */
+    if (state.slowed && state.slow_paused) {
+        recomp_overlay_add_line(text, "Slow motion paused");
+    } else if (state.slowed) {
+        const unsigned speed = 1u << state.settings.slow;
+        if (speed > 1u && state.blur > 1u)
+            recomp_overlay_add_line(text, "Slow motion 1/%u, motion blur", speed);
+        else if (speed > 1u)
+            recomp_overlay_add_line(text, "Slow motion 1/%u", speed);
+        else
+            recomp_overlay_add_line(text, "Running, motion blur");
+    } else {
+        recomp_overlay_add_line(text, "%s", recomp_scene_freeze_active() ? "Frozen" : "Running");
+    }
     if (state.controller_hints > 0) {
         recomp_overlay_set_hint(text, viewer
             ? "R3 leave  |  Start freeze  |  RB step  |  LB clean view  |  Back + A screenshot  |  Y reset\n"
