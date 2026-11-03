@@ -402,8 +402,7 @@ on screen but a pause of about a second. Depth of field gathers n² times as
 many taps in that frame (up to 1536), so its blur is as smooth as at 1x. Sizes
 shrink to keep the frame within 16384 pixels a side and 40 million in all
 (4x at 1080p, 7680x4320, fits). The PNG is uncompressed, about 130 MB at
-7680x4320. The D3D11 presenter does not draw big screenshots yet; there, or
-when no bigger size fits, the frame is saved at its own size.
+7680x4320. When no bigger size fits, the frame is saved at its own size.
 
 The key light settings change scene light 0 in the readable light code
 (docs/stage-lights.md): the angle turns its direction and the sun the
@@ -651,8 +650,15 @@ Record video (ffmpeg from `RECOMP_FFMPEG` or the PATH) work there too, and
 time of day tints the baked stage and sky as on SDL GPU (`camera_flags.yzw`
 on unlit draws and backgrounds before the scene, and the lights of lit
 scenery; `sceneTint`). Big
-screenshots are saved at the frame's own size: this presenter sizes its
-targets once. This was written and compiled (llvm-mingw) without a Windows
+screenshots work as on SDL GPU (`startBigShot`, `resizeMain`,
+`finishBigShot`): the guest's main target and its depth are made again n
+times larger, single sampled, for one frame; buffer copies follow the size
+when next made, main-sized custom depths are dropped, and the picture the
+window would show is saved from the GPU (`savePicture`, or `saveLayers` for
+a transparent one), not shown, since the swap chain keeps its own size. With
+VRR's output, SMAA, the g-buffer, RTGI or gamma on, which keep main-sized
+targets of their own or change what is shown, the frame is saved at its own
+size. This was written and compiled (llvm-mingw) without a Windows
 machine to run it on, and its shaders were checked only with glslang's HLSL
 front end; anything that fails to set up leaves the frame as the game drew
 it.

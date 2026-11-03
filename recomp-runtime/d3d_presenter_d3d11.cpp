@@ -563,6 +563,13 @@ struct RecompD3dPresenter {
     GBuffer gbuffer;
     // The free camera's effects (d3d_presenter_d3d11_camera.h).
     D3d11CameraEffects camera;
+    /* A big screenshot (camera_effects.h): the main targets are drawn this
+       many times larger for one frame, saved, not shown, then put back. */
+    struct {
+        bool active = false;
+        float scale = 1.0f;     // the size to go back to
+        uint32_t msaa = 1u;
+    } big_shot;
     DWORD owner_thread = 0;
     HINSTANCE instance = nullptr;
     bool owns_window_class = false;
@@ -2523,7 +2530,14 @@ void copyGuestBuffer(RecompD3dPresenter *presenter, ID3D11Resource *target)
 bool createBufferCopy(RecompD3dPresenter *presenter,
     ID3D11Texture2D *&copy, ID3D11ShaderResourceView *&sample, bool mips = false)
 {
-    if (copy != nullptr) return true;
+    if (copy != nullptr) {
+        // A copy from before the main targets changed size is made again.
+        D3D11_TEXTURE2D_DESC old{};
+        copy->GetDesc(&old);
+        if (old.Width == mainWidth(presenter) && old.Height == mainHeight(presenter)) return true;
+        releaseCom(sample);
+        releaseCom(copy);
+    }
     D3D11_TEXTURE2D_DESC texture_desc{};
     texture_desc.Width = mainWidth(presenter);
     texture_desc.Height = mainHeight(presenter);
@@ -4095,6 +4109,117 @@ void runSmaa(RecompD3dPresenter *presenter, ID3D11ShaderResourceView *color,
     }
 }
 
+/* The main targets at another scale and sample count: the guest's colour
+   target and its depth, made again; buffer copies follow the size when next
+   made (createBufferCopy), and main-sized custom depths are dropped. False,
+   with nothing changed but the depth made again, when there is no room. */
+bool resizeMain(RecompD3dPresenter *presenter, float scale, uint32_t msaa)
+{
+    ID3D11Resource *old_resource = nullptr;
+    presenter->render_target_view->GetResource(&old_resource);
+    ID3D11Texture2D *old_texture = nullptr;
+    if (old_resource != nullptr) old_resource->QueryInterface(IID_PPV_ARGS(&old_texture));
+    releaseCom(old_resource);
+    if (old_texture == nullptr) return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    old_texture->GetDesc(&desc);
+    releaseCom(old_texture);
+    const float old_scale = presenter->scale;
+    const uint32_t old_msaa = presenter->msaa;
+    presenter->scale = scale;
+    presenter->msaa = msaa;
+    desc.Width = mainWidth(presenter);
+    desc.Height = mainHeight(presenter);
+    desc.SampleDesc.Count = msaa;
+    desc.SampleDesc.Quality = 0u;
+    ID3D11Texture2D *guest_buffer = nullptr;
+    ID3D11RenderTargetView *view = nullptr;
+    HRESULT result = presenter->device->CreateTexture2D(&desc, nullptr, &guest_buffer);
+    if (SUCCEEDED(result)) result = presenter->device->CreateRenderTargetView(guest_buffer, nullptr, &view);
+    releaseCom(guest_buffer);
+    if (SUCCEEDED(result)) result = createMainDepth(presenter);
+    if (FAILED(result)) {
+        std::fprintf(stderr, "recomp screenshot: no room for a %ux%u frame\n", desc.Width, desc.Height);
+        releaseCom(view);
+        presenter->scale = old_scale;
+        presenter->msaa = old_msaa;
+        createMainDepth(presenter);
+        presenter->context->OMSetRenderTargets(1u, &presenter->render_target_view, presenter->depth_view);
+        return false;
+    }
+    presenter->context->ClearState();
+    releaseCom(presenter->render_target_view);
+    presenter->render_target_view = view;
+    releaseCom(presenter->back_buffer_sample);
+    releaseCom(presenter->back_buffer_copy);
+    for (uint32_t i = 0u; i < presenter->depth_targets.size();) {
+        DepthTargetEntry &entry = presenter->depth_targets[i];
+        if (!entry.host_main) {
+            ++i;
+            continue;
+        }
+        releaseCom(entry.view);
+        entry = presenter->depth_targets.back();
+        presenter->depth_targets.pop_back();
+    }
+    // The view depth the main target's draws also write keeps its size.
+    if (presenter->camera.depthTarget() != nullptr)
+        presenter->camera.wantDepth(presenter->device, desc.Width, desc.Height, msaa);
+    presenter->context->OMSetRenderTargets(1u, &presenter->render_target_view, presenter->depth_view);
+    const D3D11_VIEWPORT viewport = {0.0f, 0.0f, float(desc.Width), float(desc.Height), 0.0f, 1.0f};
+    presenter->context->RSSetViewports(1u, &viewport);
+    presenter->target_scale_x = viewport.Width / presenter->config.width;
+    presenter->target_scale_y = viewport.Height / presenter->config.height;
+    return true;
+}
+
+/* A requested big screenshot makes the next frame `n` times larger, single
+   sampled (its own size smooths its edges), at most 16384 pixels a side and
+   40 million in all. Not with what keeps its own main-sized targets (VRR's
+   output, SMAA, the g-buffer, RTGI) or gamma, which the saved picture would
+   miss: false, and the frame is saved at its own size. */
+bool startBigShot(RecompD3dPresenter *presenter, unsigned n)
+{
+    bool blocked = presenter->vrr_target_view != nullptr || presenter->smaa ||
+        presenter->gbuffer.enabled || presenter->gamma_enabled;
+#ifdef RECOMP_RTGI
+    blocked = blocked || presenter->rtgi != nullptr;
+#endif
+    if (n < 2u || blocked || presenter->render_target_view == nullptr) return false;
+    for (; n >= 2u; --n) {
+        const double height = double(presenter->config.height) * presenter->scale * n, width = height * 16.0 / 9.0;
+        if (width <= 16384.0 && height <= 16384.0 && width * height <= 40.0e6) break;
+    }
+    if (n < 2u) {
+        std::fprintf(stderr, "recomp screenshot: too big to draw; saving the frame as it is\n");
+        return false;
+    }
+    auto &big = presenter->big_shot;
+    big.scale = presenter->scale;
+    big.msaa = presenter->msaa;
+    if (!resizeMain(presenter, presenter->scale * float(n), 1u)) return false;
+    big.active = true;
+    // A transparent one is drawn with only the characters, as at its own size.
+    if (presenter->camera.transparentReady()) presenter->camera.clear_shot = true;
+    std::fprintf(stderr, "recomp screenshot: next frame at %ux%u\n", mainWidth(presenter), mainHeight(presenter));
+    return true;
+}
+
+// The big frame drawn: saved, and the main targets put back.
+void finishBigShot(RecompD3dPresenter *presenter)
+{
+    auto &big = presenter->big_shot;
+    const bool saved = presenter->camera.clear_shot
+        ? presenter->camera.saveLayers(presenter->device, presenter->context)
+        : presenter->camera.savePicture(presenter->device, presenter->context);
+    presenter->camera.clear_shot = false;
+    big.active = false;
+    if (!resizeMain(presenter, big.scale, big.msaa))
+        std::fprintf(stderr, "recomp screenshot: could not go back to the frame's size\n");
+    // Not saved (a held frame, no room to read it): the next frame, as it is.
+    if (!saved) recomp_screenshot_request_frame();
+}
+
 bool renderOutput(RecompD3dPresenter *presenter, ID3D11RenderTargetView *output)
 {
     if (output == nullptr) return false;
@@ -4384,8 +4509,18 @@ RecompD3dPresenterError submitPresent(
         desc.width = presenter->config.width;
         desc.height = presenter->config.height;
         ID3D11ShaderResourceView *back = present.hold ? nullptr : lookupBackBufferTexture(presenter, desc);
-        presenter->camera.present(presenter->device, presenter->context, back, present.blur_index, present.blur_count,
-            mainWidth(presenter), mainHeight(presenter), presenter->msaa);
+        // A big screenshot's frame is not blurred.
+        const bool big = presenter->big_shot.active;
+        presenter->camera.present(presenter->device, presenter->context, back,
+            big ? 0u : present.blur_index, big ? 1u : present.blur_count,
+            mainWidth(presenter), mainHeight(presenter), presenter->msaa,
+            big ? presenter->scale / presenter->big_shot.scale : 1.0f);
+    }
+    // A big screenshot's frame is saved, not shown (the window cannot take
+    // it), and the main targets go back to their size.
+    if (presenter->big_shot.active) {
+        finishBigShot(presenter);
+        return RECOMP_D3D_PRESENTER_OK;
     }
     if (presenter->gbuffer.enabled && presenter->gbuffer.debug_view) {
         presenter->gbuffer.show(presenter->context, output);
@@ -4428,9 +4563,10 @@ RecompD3dPresenterError submitPresent(
     // window keeps the last picture presented.
     if (present.hold) return RECOMP_D3D_PRESENTER_OK;
     {
-        // This presenter draws no big screenshots: one asked for is saved at
-        // the frame's own size.
-        if (recomp_camera_effects_take_big_shot() != 0u) recomp_screenshot_request_frame();
+        // A big screenshot is the next frame, drawn larger; one that cannot
+        // be is saved at the frame's own size.
+        if (const unsigned n = recomp_camera_effects_take_big_shot())
+            if (!startBigShot(presenter, n)) recomp_screenshot_request_frame();
         if (recomp_screenshot_take_request()) {
             // A transparent one is the next frame, drawn with only the characters.
             if (presenter->camera.transparentReady()) presenter->camera.clear_shot = true;

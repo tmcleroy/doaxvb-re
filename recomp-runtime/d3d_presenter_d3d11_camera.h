@@ -339,7 +339,8 @@ struct D3d11CameraEffects {
        effects, and works out what the window shows from the guest's back
        buffer (`back`, main size). */
     void present(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11ShaderResourceView *guest,
-        uint32_t index, uint32_t count, uint32_t main_width, uint32_t main_height, uint32_t samples)
+        uint32_t index, uint32_t count, uint32_t main_width, uint32_t main_height, uint32_t samples,
+        float bigger = 1.0f)
     {
         back = guest;
         depth_now = nullptr;
@@ -395,6 +396,7 @@ struct D3d11CameraEffects {
             recomp_effects::EffectsFrame frame;
             frame.width = float(w);
             frame.height = float(h);
+            frame.bigger = bigger;
             frame.depth_drawn = depth_ready;
             frame.sun_seen = sun;
             std::memcpy(frame.sun_dir, sun_dir, sizeof frame.sun_dir);
@@ -430,6 +432,43 @@ struct D3d11CameraEffects {
     ID3D11ShaderResourceView *ownPicture() const
     {
         return shown != back ? shown : nullptr;
+    }
+
+    /* What the window would show (main size), saved as a screenshot: a big
+       screenshot's frame, which the window cannot take. */
+    bool savePicture(ID3D11Device *device, ID3D11DeviceContext *context) const
+    {
+        if (shown == nullptr) return false;
+        ID3D11Resource *resource = nullptr;
+        shown->GetResource(&resource);
+        ID3D11Texture2D *picture = nullptr;
+        if (resource != nullptr) resource->QueryInterface(IID_PPV_ARGS(&picture));
+        drop(resource);
+        if (picture == nullptr) return false;
+        D3D11_TEXTURE2D_DESC desc{};
+        picture->GetDesc(&desc);
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.SampleDesc.Count = 1u;
+        desc.SampleDesc.Quality = 0u;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0u;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0u;
+        bool saved = false;
+        ID3D11Texture2D *staging = nullptr;
+        if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &staging))) {
+            // The first level only: the guest's copy carries smaller ones.
+            context->CopySubresourceRegion(staging, 0u, 0u, 0u, 0u, picture, 0u, nullptr);
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (SUCCEEDED(context->Map(staging, 0u, D3D11_MAP_READ, 0u, &mapped))) {
+                recomp_screenshot_save(static_cast<const uint8_t *>(mapped.pData), desc.Width, desc.Height, mapped.RowPitch);
+                context->Unmap(staging, 0u);
+                saved = true;
+            }
+        }
+        drop(staging);
+        drop(picture);
+        return saved;
     }
 
     // Draws what the window shows into `output` (main size).
