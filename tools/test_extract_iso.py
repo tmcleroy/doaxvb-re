@@ -136,6 +136,20 @@ class ExtractionTests(unittest.TestCase):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 self.assertEqual(saved_launcher_settings(root).get("RECOMP_D3D_SUN_SHADOW"), expected)
 
+    def test_saved_graphics_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private").mkdir()
+            names = ("RECOMP_D3D_ANISOTROPY", "RECOMP_D3D_OCCLUSION", "RECOMP_D3D_BLOOM",
+                     "RECOMP_D3D_SKIN_SOFT", "RECOMP_D3D_SKIN_SHEEN")
+            for saved, expected in (({}, ("1", "0", "0", "0", "0")),
+                                    ({"anisotropy": False, "ambient_occlusion": True, "bloom": True,
+                                      "skin_soft": True, "skin_sheen": True}, ("0", "0.5", "0.3", "1", "1")),
+                                    ({"anisotropy": "no", "bloom": "yes"}, ("1", "0", "0", "0", "0"))):
+                (root / "private/launcher.json").write_text(json.dumps(saved))
+                got = saved_launcher_settings(root)
+                self.assertEqual(tuple(got.get(name) for name in names), expected)
+
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

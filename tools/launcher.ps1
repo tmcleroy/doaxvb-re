@@ -89,6 +89,7 @@ $settings = [pscustomobject]@{
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true
+    anisotropy = $true; ambient_occlusion = $false; bloom = $false; skin_soft = $false; skin_sheen = $false
 }
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
@@ -213,8 +214,8 @@ $card = New-Object Windows.Forms.Panel -Property @{ Left = 374; Top = 138; Width
 $subtitle = New-Object Windows.Forms.Label -Property @{ Left = 0; Top = 0; Width = 448; Height = 22; ForeColor = $soft; BackColor = [Drawing.Color]::Transparent }
 $card.Controls.Add($subtitle)
 
-$sections = 'Main Menu', 'Build', 'Graphics', 'Audio', 'Game', 'Textures', 'Help'
-$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
+$sections = 'Main Menu', 'Build', 'Graphics', 'Enhancements', 'Audio', 'Game', 'Textures', 'Help'
+$subtitles = 'Your next visit to Zack Island', 'Build the game from your ISO', 'Display and image quality', 'More graphics: filtering, light and skin', 'Volume and custom soundtrack', 'Swimsuits, demo and camera', 'Replacement packs and dumps', 'Keys while playing'
 $pages = foreach ($name in $sections) {
     $page = New-Object Windows.Forms.Panel -Property @{ Left = 0; Top = 32; Width = 448; Height = 244; BackColor = (C '#185162'); BackgroundImage = (Crop 374 170 448 244); BackgroundImageLayout = 'None'; Visible = $false }
     $card.Controls.Add($page); $page
@@ -349,11 +350,19 @@ $hitColor.Enabled = $rtgi.Checked
 $rtgi.Add_CheckedChanged({ $strength.Enabled = $rtgi.Checked; $hitColor.Enabled = $rtgi.Checked })
 New-Note $pages[2] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fallback.' 208 32 | Out-Null
 
+# Graphics enhancements; see docs/graphics-options.md.
+$anisotropy = New-Toggle $pages[3] 'Anisotropic filtering (sharp ground at an angle)' 0 $settings.anisotropy
+$occlusion = New-Toggle $pages[3] 'Ambient occlusion (creases and contact darken)' 28 $settings.ambient_occlusion
+$bloom = New-Toggle $pages[3] 'Bloom and sun glare' 56 $settings.bloom
+$skinSoft = New-Toggle $pages[3] 'Soft skin (light passes under the skin)' 84 $settings.skin_soft
+$skinSheen = New-Toggle $pages[3] 'Skin sheen (a soft highlight)' 112 $settings.skin_sheen
+New-Note $pages[3] 'Ambient occlusion and bloom also work outside the free camera; the free camera can add more of each.' 148 40 | Out-Null
+
 # PowerShell 7 loads JSON numbers as Int64, so cast before finding their index.
 $savedVolume = [Array]::IndexOf($volumes, [int]$settings.volume)
 $volumeNames = [string[]]($volumes | ForEach-Object { if ($_ -eq 0) { 'Mute' } else { "$_%" } })
-$volume = Add-Row $pages[3] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
-$shuffle = New-Toggle $pages[3] 'Shuffle music' 40 $settings.shuffle
+$volume = Add-Row $pages[4] 'Volume' 0 (New-Choice $volumeNames $savedVolume)
+$shuffle = New-Toggle $pages[4] 'Shuffle music' 40 $settings.shuffle
 $music = New-Button 'Open music folder' 160
 $music.Top = 76
 $music.Add_Click({
@@ -366,15 +375,15 @@ $music.Add_Click({
         [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'DOAXBV launcher') | Out-Null
     }
 })
-$pages[3].Controls.Add($music)
-New-Note $pages[3] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
+$pages[4].Controls.Add($music)
+New-Note $pages[4] 'Songs in this folder play at the Radio Station.' 114 40 | Out-Null
 
-$unlock = New-Toggle $pages[4] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
-$demoCut = New-Toggle $pages[4] 'Shorter demo cuts' 28 $settings.demo_cut_hold
-$freeCamera = New-Toggle $pages[4] 'Free camera (F1)' 56 $settings.free_camera
-$idle = Add-Row $pages[4] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
+$unlock = New-Toggle $pages[5] 'Unlock swimsuits' 0 $settings.unlock_swimsuits
+$demoCut = New-Toggle $pages[5] 'Shorter demo cuts' 28 $settings.demo_cut_hold
+$freeCamera = New-Toggle $pages[5] 'Free camera (F1)' 56 $settings.free_camera
+$idle = Add-Row $pages[5] 'Title screen idle' 92 (New-Choice $idleNames ([Array]::IndexOf($idleValues, [string]$settings.title_idle)))
 
-$textures = New-Toggle $pages[5] 'Use texture pack' 0 $settings.textures
+$textures = New-Toggle $pages[6] 'Use texture pack' 0 $settings.textures
 $textureFolder = New-Object Windows.Forms.TextBox -Property @{ Left = 0; Top = 32; Width = 350; ReadOnly = $true; BorderStyle = 'FixedSingle'; BackColor = $field; ForeColor = $ink; Text = [string]$settings.textureFolder }
 $browse = New-Button 'Folder...' 88
 $browse.Left = 358; $browse.Top = 30
@@ -385,16 +394,16 @@ $browse.Add_Click({
     if ($dialog.ShowDialog($form) -eq 'OK') { $textureFolder.Text = $dialog.SelectedPath }
     $dialog.Dispose()
 })
-$pages[5].Controls.AddRange(@($textureFolder, $browse))
-$textureDump = New-Toggle $pages[5] 'Dump original textures' 68 $settings.textureDump
-New-Note $pages[5] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
+$pages[6].Controls.AddRange(@($textureFolder, $browse))
+$textureDump = New-Toggle $pages[6] 'Dump original textures' 68 $settings.textureDump
+New-Note $pages[6] 'F12 dumps the textures in view. Ctrl+F12 reloads the pack.' 100 40 | Out-Null
 
-New-Note $pages[6] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
+New-Note $pages[7] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12    Dump textures in view`n    Ctrl+F12    Reload texture pack`n`nRTGI`n    F5 / F6    Strength down / up`n    F7    Split comparison`n    F8    Toggle GI`n    F9    Pause or resume`n    F10    Step one frame" 0 244 | Out-Null
 
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
     $render = 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Checked) { "$($dot)VRR" })
-    $extras = @($(if ($sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Checked) { 'RTGI' })) | Where-Object { $_ }
+    $extras = @($(if ($sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Checked) { 'RTGI' }), $(if ($occlusion.Checked) { 'AO' }), $(if ($bloom.Checked) { 'Bloom' }), $(if ($skinSoft.Checked -or $skinSheen.Checked) { 'Skin' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
@@ -512,6 +521,7 @@ $percent = $volumes[$volume.SelectedIndex]
     sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
+    anisotropy = $anisotropy.Checked; ambient_occlusion = $occlusion.Checked; bloom = $bloom.Checked; skin_soft = $skinSoft.Checked; skin_sheen = $skinSheen.Checked
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -536,4 +546,10 @@ $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' 
 $env:RECOMP_D3D_RTGI = if ($rtgi.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI_STRENGTH = $strength.Value.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_RTGI_HITCOLOR = if ($hitColor.Checked) { '1' } else { '0' }
+# The amounts match tools/run_game.py's GRAPHICS_ON.
+$env:RECOMP_D3D_ANISOTROPY = if ($anisotropy.Checked) { '1' } else { '0' }
+$env:RECOMP_D3D_OCCLUSION = if ($occlusion.Checked) { '0.5' } else { '0' }
+$env:RECOMP_D3D_BLOOM = if ($bloom.Checked) { '0.3' } else { '0' }
+$env:RECOMP_D3D_SKIN_SOFT = if ($skinSoft.Checked) { '1' } else { '0' }
+$env:RECOMP_D3D_SKIN_SHEEN = if ($skinSheen.Checked) { '1' } else { '0' }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

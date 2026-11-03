@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// macOS launcher: pick resolution, anti-aliasing, volume and music options,
+// macOS launcher: pick resolution, anti-aliasing, graphics, volume and music options,
 // remember them in private/launcher.json, then exit 0 so launcher.sh starts
 // the game. Mirrors tools/launcher.ps1 without the Music folder button: custom
 // soundtracks need Media Foundation. Exits 1 if the window is closed.
@@ -21,8 +21,8 @@ if let data = try? Data(contentsOf: settingsURL),
 func intSetting(_ key: String, _ fallback: Int) -> Int {
     (settings[key] as? NSNumber)?.intValue ?? fallback
 }
-func boolSetting(_ key: String) -> Bool {
-    (settings[key] as? NSNumber)?.boolValue ?? false
+func boolSetting(_ key: String, _ fallback: Bool = false) -> Bool {
+    (settings[key] as? NSNumber)?.boolValue ?? fallback
 }
 // What the game does when its title screen is left idle; see docs/title-idle.md.
 let idleValues = ["default", "no-cutscene", "cpu-exhibition"]
@@ -33,7 +33,7 @@ let screenHeight: Int = {
 }()
 
 final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 376),
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 376),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
     let resolution = NSPopUpButton()
     let msaa = NSPopUpButton()
@@ -45,12 +45,26 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let demoCut = NSButton(checkboxWithTitle: "Shorter demo cuts", target: nil, action: nil)
     let freeCamera = NSButton(checkboxWithTitle: "Free camera", target: nil, action: nil)
     let sunShadows = NSButton(checkboxWithTitle: "Sun shadows", target: nil, action: nil)
+    // Graphics enhancements; see docs/graphics-options.md.
+    let anisotropy = NSButton(checkboxWithTitle: "Anisotropic filtering", target: nil, action: nil)
+    let occlusion = NSButton(checkboxWithTitle: "Ambient occlusion", target: nil, action: nil)
+    let bloom = NSButton(checkboxWithTitle: "Bloom and sun glare", target: nil, action: nil)
+    let skinSoft = NSButton(checkboxWithTitle: "Soft skin", target: nil, action: nil)
+    let skinSheen = NSButton(checkboxWithTitle: "Skin sheen", target: nil, action: nil)
     var launched = false
 
-    func addRow(_ title: String, _ popup: NSPopUpButton, _ items: [String], _ index: Int, _ y: CGFloat) {
+    func addHeader(_ title: String, _ x: CGFloat) {
+        let header = NSTextField(labelWithString: title)
+        header.font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+        header.frame = NSRect(x: x, y: 342, width: 228, height: 20)
+        window.contentView!.addSubview(header)
+    }
+
+    func addRow(_ title: String, _ popup: NSPopUpButton, _ items: [String], _ index: Int, _ y: CGFloat,
+                _ x: CGFloat = 16) {
         let label = NSTextField(labelWithString: title)
-        label.frame = NSRect(x: 16, y: y + 3, width: 84, height: 20)
-        popup.frame = NSRect(x: 104, y: y, width: 140, height: 26)
+        label.frame = NSRect(x: x, y: y + 3, width: 84, height: 20)
+        popup.frame = NSRect(x: x + 88, y: y, width: 140, height: 26)
         popup.addItems(withTitles: items)
         popup.selectItem(at: max(0, index))
         window.contentView!.addSubview(label)
@@ -60,40 +74,50 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "DOAXBV"
         window.delegate = self
+        // Left: graphics. Right: the game.
+        addHeader("Graphics", 16)
+        addHeader("Game", 276)
         let savedHeight = intSetting("height", screenHeight)
         let nearest = heights.lastIndex(where: { $0 <= savedHeight }) ?? 0
         addRow("Resolution", resolution,
-               heights.map { $0 == 480 ? "480p (windowed)" : "\($0)p" }, nearest, 334)
+               heights.map { $0 == 480 ? "480p (windowed)" : "\($0)p" }, nearest, 306)
         let savedMsaa = intSetting("msaa", 1)
         addRow("MSAA", msaa, samples.map { $0 == 1 ? "Off" : "\($0)x" },
-               samples.firstIndex(of: savedMsaa) ?? 0, 302)
-        smaa.frame = NSRect(x: 104, y: 276, width: 140, height: 20)
+               samples.firstIndex(of: savedMsaa) ?? 0, 274)
+        smaa.frame = NSRect(x: 104, y: 248, width: 160, height: 20)
         smaa.title = "SMAA (unsupported)"
         smaa.state = .off
         smaa.isEnabled = false
-        addRow("Volume", volume, volumes.map { $0 == 0 ? "Mute" : "\($0)%" },
-               volumes.firstIndex(of: intSetting("volume", 100)) ?? 0, 242)
-        shuffle.frame = NSRect(x: 104, y: 216, width: 140, height: 20)
-        shuffle.state = boolSetting("shuffle") ? .on : .off
-        unlock.frame = NSRect(x: 104, y: 190, width: 140, height: 20)
-        unlock.state = boolSetting("unlock_swimsuits") ? .on : .off
-        demoCut.frame = NSRect(x: 104, y: 164, width: 140, height: 20)
-        demoCut.state = boolSetting("demo_cut_hold") ? .on : .off
-        freeCamera.frame = NSRect(x: 104, y: 138, width: 140, height: 20)
-        freeCamera.state = boolSetting("free_camera") ? .on : .off
         // Off keeps the game's original shadows; see docs/sun-shadow.md.
-        sunShadows.frame = NSRect(x: 104, y: 112, width: 140, height: 20)
         sunShadows.state = boolSetting("sun_shadows") ? .on : .off
+        anisotropy.state = boolSetting("anisotropy", true) ? .on : .off
+        occlusion.state = boolSetting("ambient_occlusion") ? .on : .off
+        bloom.state = boolSetting("bloom") ? .on : .off
+        skinSoft.state = boolSetting("skin_soft") ? .on : .off
+        skinSheen.state = boolSetting("skin_sheen") ? .on : .off
+        for (i, box) in [sunShadows, anisotropy, occlusion, bloom, skinSoft, skinSheen].enumerated() {
+            box.frame = NSRect(x: 16, y: 218 - CGFloat(i) * 26, width: 236, height: 20)
+        }
+        addRow("Volume", volume, volumes.map { $0 == 0 ? "Mute" : "\($0)%" },
+               volumes.firstIndex(of: intSetting("volume", 100)) ?? 0, 306, 276)
+        shuffle.state = boolSetting("shuffle") ? .on : .off
+        unlock.state = boolSetting("unlock_swimsuits") ? .on : .off
+        demoCut.state = boolSetting("demo_cut_hold") ? .on : .off
+        freeCamera.state = boolSetting("free_camera") ? .on : .off
+        for (i, box) in [shuffle, unlock, demoCut, freeCamera].enumerated() {
+            box.frame = NSRect(x: 276, y: 274 - CGFloat(i) * 26, width: 228, height: 20)
+        }
         let idleLabel = NSTextField(labelWithString: "Title screen idle behavior")
-        idleLabel.frame = NSRect(x: 16, y: 82, width: 228, height: 20)
-        idle.frame = NSRect(x: 16, y: 54, width: 228, height: 26)
+        idleLabel.frame = NSRect(x: 276, y: 162, width: 228, height: 20)
+        idle.frame = NSRect(x: 276, y: 134, width: 228, height: 26)
         idle.addItems(withTitles: idleNames)
         idle.selectItem(at: idleValues.firstIndex(of: settings["title_idle"] as? String ?? "") ?? 0)
 
         let play = NSButton(title: "Play", target: self, action: #selector(play))
-        play.frame = NSRect(x: 160, y: 12, width: 88, height: 30)
+        play.frame = NSRect(x: 416, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, idleLabel, idle, play] { window.contentView!.addSubview(view) }
+        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, anisotropy, occlusion, bloom,
+                     skinSoft, skinSheen, idleLabel, idle, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -111,6 +135,11 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "demo_cut_hold": demoCut.state == .on,
             "free_camera": freeCamera.state == .on,
             "sun_shadows": sunShadows.state == .on,
+            "anisotropy": anisotropy.state == .on,
+            "ambient_occlusion": occlusion.state == .on,
+            "bloom": bloom.state == .on,
+            "skin_soft": skinSoft.state == .on,
+            "skin_sheen": skinSheen.state == .on,
             "title_idle": idleValues[idle.indexOfSelectedItem],
         ]
         do {

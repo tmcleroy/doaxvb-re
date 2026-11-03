@@ -75,6 +75,8 @@ def launch(root, receipt_path=None, settings=False):
 TITLE_IDLE = ("default", "no-cutscene", "cpu-exhibition")
 # Frames a demo scene cut holds when the launcher's "Shorter demo cuts" is on.
 DEMO_CUT_HOLD_SHORT = "12"
+# The amount (0 to 1) each graphics option ticked in the launcher asks for.
+GRAPHICS_ON = {"ambient_occlusion": "0.5", "bloom": "0.3", "skin_soft": "1", "skin_sheen": "1"}
 
 
 def saved_launcher_settings(root):
@@ -89,6 +91,14 @@ def saved_launcher_settings(root):
                 "RECOMP_MUSIC_SHUFFLE": "1" if settings.get("shuffle") else "0",
                 "RECOMP_UNLOCK_SWIMSUITS": "1" if settings.get("unlock_swimsuits") else "0",
                 "RECOMP_D3D_SUN_SHADOW": "1" if settings.get("sun_shadows") is True else "0",
+                # Graphics options (docs/graphics-options.md): anisotropic
+                # filtering is on unless turned off; the rest are off unless on.
+                "RECOMP_D3D_ANISOTROPY": "0" if settings.get("anisotropy") is False else "1",
+                "RECOMP_D3D_OCCLUSION": GRAPHICS_ON["ambient_occlusion"]
+                if settings.get("ambient_occlusion") is True else "0",
+                "RECOMP_D3D_BLOOM": GRAPHICS_ON["bloom"] if settings.get("bloom") is True else "0",
+                "RECOMP_D3D_SKIN_SOFT": GRAPHICS_ON["skin_soft"] if settings.get("skin_soft") is True else "0",
+                "RECOMP_D3D_SKIN_SHEEN": GRAPHICS_ON["skin_sheen"] if settings.get("skin_sheen") is True else "0",
                 "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default",
                 **({"RECOMP_DEMO_CUT_HOLD": DEMO_CUT_HOLD_SHORT}
                    if settings.get("demo_cut_hold") is True else {}),

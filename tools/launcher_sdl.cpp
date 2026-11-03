@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Linux launcher: pick resolution, anti-aliasing, volume and music options,
+// Linux launcher: pick resolution, anti-aliasing, graphics, volume and music options,
 // remember them in private/launcher.json, then exit 0 so run_game.py starts
 // the game. Mirrors tools/launcher.ps1 without SMAA (Direct3D 11 only) and the
 // Music folder button (custom soundtracks need Media Foundation). Gamepad,
@@ -19,8 +19,9 @@ namespace {
 // Everything is laid out on a 640x400 canvas and scaled by whole numbers,
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
-constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 100, kRowGap = 28;
-constexpr float kButtonY = kFirstRowY + 9 * kRowGap + 8, kButtonW = 194, kButtonH = 30;
+// Two columns: graphics on the left, the game on the right.
+constexpr float kColumnX[2] = {16, 328}, kRowW = 296, kRowH = 26, kHeaderY = 88, kFirstRowY = 104, kRowGap = 28;
+constexpr float kButtonY = kFirstRowY + 8 * kRowGap + 6, kButtonH = 30;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
@@ -29,12 +30,23 @@ const int kVolumes[] = {100, 75, 50, 25, 0};
 const char *const kIdleValues[] = {"default", "no-cutscene", "cpu-exhibition"};
 const char *const kIdleNames[] = {"Default", "No cutscene", "CPU Exhibition"};
 
-enum Item { RESOLUTION, MSAA, SUN_SHADOWS, VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE, PLAY, QUIT, ITEM_COUNT };
+enum Item {
+    // Graphics (docs/graphics-options.md).
+    RESOLUTION, MSAA, SUN_SHADOWS, ANISOTROPY, OCCLUSION, BLOOM, SKIN_SOFT, SKIN_SHEEN,
+    // The game.
+    VOLUME, SHUFFLE, UNLOCK, DEMO_CUT, FREE_CAMERA, IDLE,
+    PLAY, QUIT, ITEM_COUNT
+};
 
 struct Settings {
     int height = 0;
     int msaa = 1;
     bool sun_shadows = false;
+    bool anisotropy = true;
+    bool occlusion = false;
+    bool bloom = false;
+    bool skin_soft = false;
+    bool skin_sheen = false;
     int volume = 100;
     bool shuffle = false;
     bool unlock_swimsuits = false;
@@ -70,6 +82,11 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "height", value)) settings.height = std::atoi(value.c_str());
     if (jsonValue(text, "msaa", value)) settings.msaa = std::atoi(value.c_str());
     if (jsonValue(text, "sun_shadows", value)) settings.sun_shadows = value == "true";
+    if (jsonValue(text, "anisotropy", value)) settings.anisotropy = value != "false";
+    if (jsonValue(text, "ambient_occlusion", value)) settings.occlusion = value == "true";
+    if (jsonValue(text, "bloom", value)) settings.bloom = value == "true";
+    if (jsonValue(text, "skin_soft", value)) settings.skin_soft = value == "true";
+    if (jsonValue(text, "skin_sheen", value)) settings.skin_sheen = value == "true";
     if (jsonValue(text, "volume", value)) settings.volume = std::atoi(value.c_str());
     if (jsonValue(text, "shuffle", value)) settings.shuffle = value == "true";
     if (jsonValue(text, "unlock_swimsuits", value)) settings.unlock_swimsuits = value == "true";
@@ -88,6 +105,11 @@ bool saveSettings(const std::string &path, const Settings &settings)
     std::ofstream file(path, std::ios::trunc);
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
          << ",\n  \"smaa\": false,\n  \"sun_shadows\": " << (settings.sun_shadows ? "true" : "false")
+         << ",\n  \"anisotropy\": " << (settings.anisotropy ? "true" : "false")
+         << ",\n  \"ambient_occlusion\": " << (settings.occlusion ? "true" : "false")
+         << ",\n  \"bloom\": " << (settings.bloom ? "true" : "false")
+         << ",\n  \"skin_soft\": " << (settings.skin_soft ? "true" : "false")
+         << ",\n  \"skin_sheen\": " << (settings.skin_sheen ? "true" : "false")
          << ",\n  \"volume\": " << settings.volume
          << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false")
          << ",\n  \"unlock_swimsuits\": " << (settings.unlock_swimsuits ? "true" : "false")
@@ -106,14 +128,16 @@ int indexOf(const int (&values)[N], int value, int fallback)
 
 SDL_FRect itemRect(int item)
 {
-    if (item == PLAY) return {kRowX, kButtonY, kButtonW, kButtonH};
-    if (item == QUIT) return {kRowX + kRowW - kButtonW, kButtonY, kButtonW, kButtonH};
-    return {kRowX, kFirstRowY + item * kRowGap, kRowW, kRowH};
+    if (item == PLAY) return {kColumnX[0], kButtonY, kRowW, kButtonH};
+    if (item == QUIT) return {kColumnX[1], kButtonY, kRowW, kButtonH};
+    const int column = item >= VOLUME ? 1 : 0;
+    const int row = column ? item - VOLUME : item;
+    return {kColumnX[column], kFirstRowY + row * kRowGap, kRowW, kRowH};
 }
 
 struct Launcher {
     SDL_Renderer *renderer = nullptr;
-    int choice[9] = {};
+    int choice[PLAY] = {};
     int selected = PLAY;
 
     std::string valueText(int item) const
@@ -132,9 +156,9 @@ struct Launcher {
 
     void change(int item, int step)
     {
-        static const int counts[] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), 2, static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2,
-            static_cast<int>(std::size(kIdleValues))};
+        static const int counts[PLAY] = {static_cast<int>(std::size(kHeights)),
+            static_cast<int>(std::size(kSamples)), 2, 2, 2, 2, 2, 2,
+            static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2, static_cast<int>(std::size(kIdleValues))};
         if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
 
@@ -176,12 +200,15 @@ struct Launcher {
         SDL_RenderClear(renderer);
         fill({0, 0, kWidth, kHeight}, kBackground);
         fill({0, 0, kWidth, 3}, kAccent);
-        centered(40, "DEAD OR ALIVE", kAccent);
-        centered(56, "XTREME BEACH VOLLEYBALL", kText, 2);
-        centered(82, "Native port settings", kMuted);
+        centered(22, "DEAD OR ALIVE", kAccent);
+        centered(38, "XTREME BEACH VOLLEYBALL", kText, 2);
+        centered(62, "Native port settings", kMuted);
+        text(kColumnX[0], kHeaderY, "GRAPHICS", kAccent);
+        text(kColumnX[1], kHeaderY, "GAME", kAccent);
 
-        static const char *labels[] = {"Resolution", "Anti-aliasing", "Sun shadows", "Volume", "Shuffle music",
-            "Unlock swimsuits", "Shorter demo cuts", "Free camera", "Title screen idle"};
+        static const char *labels[PLAY] = {"Resolution", "Anti-aliasing", "Sun shadows", "Anisotropic filter",
+            "Ambient occlusion", "Bloom and glare", "Soft skin", "Skin sheen", "Volume", "Shuffle music",
+            "Unlock swimsuits", "Shorter demo cuts", "Free camera", "Title idle"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
             const bool active = item == selected;
@@ -277,6 +304,11 @@ int main(int argc, char **argv)
     launcher.choice[DEMO_CUT] = settings.demo_cut ? 1 : 0;
     launcher.choice[FREE_CAMERA] = settings.free_camera ? 1 : 0;
     launcher.choice[SUN_SHADOWS] = settings.sun_shadows ? 1 : 0;
+    launcher.choice[ANISOTROPY] = settings.anisotropy ? 1 : 0;
+    launcher.choice[OCCLUSION] = settings.occlusion ? 1 : 0;
+    launcher.choice[BLOOM] = settings.bloom ? 1 : 0;
+    launcher.choice[SKIN_SOFT] = settings.skin_soft ? 1 : 0;
+    launcher.choice[SKIN_SHEEN] = settings.skin_sheen ? 1 : 0;
     launcher.choice[IDLE] = settings.idle;
 
     int result = -1;
@@ -368,6 +400,11 @@ int main(int argc, char **argv)
         settings.demo_cut = launcher.choice[DEMO_CUT] != 0;
         settings.free_camera = launcher.choice[FREE_CAMERA] != 0;
         settings.sun_shadows = launcher.choice[SUN_SHADOWS] != 0;
+        settings.anisotropy = launcher.choice[ANISOTROPY] != 0;
+        settings.occlusion = launcher.choice[OCCLUSION] != 0;
+        settings.bloom = launcher.choice[BLOOM] != 0;
+        settings.skin_soft = launcher.choice[SKIN_SOFT] != 0;
+        settings.skin_sheen = launcher.choice[SKIN_SHEEN] != 0;
         settings.idle = launcher.choice[IDLE];
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());

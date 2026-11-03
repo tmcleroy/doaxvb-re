@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Graphics enhancements.** New launcher options, in **Graphics** on macOS
+  and Linux and on a new **Enhancements** page on Windows: anisotropic
+  filtering (now on Metal and Vulkan too; on by default, as Direct3D 11
+  always had it), ambient occlusion and bloom with sun glare in every scene
+  (not only in the free camera), and skin shading on the girls: **Soft
+  skin** (light passes under the skin at the shadow's edge) and **Skin
+  sheen** (a soft highlight). See `docs/graphics-options.md`.
 - **Sun shadows on macOS and Linux.** The **Sun shadows** launcher option
   (`RECOMP_D3D_SUN_SHADOW=1`) now works on the Metal and Vulkan presenter as
   well. It uses the same selection, casters, receivers and overlay rules as

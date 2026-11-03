@@ -120,6 +120,8 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 fog_world_view[4];\n"
     "    float4 combiner[4];\n"
     "    float4 camera_flags; // x: a character's draw, yzw: time of day's tint (d3d_presenter_d3d11_camera.h)\n"
+    "    float4 skin; // soft, sheen, -, on: skin shading on the girls (skinShaderSource)\n"
+    "    float4 skin_view; // toward the camera, in the lights' space\n"
     "}\n"
     "float fogFactor(float depth) {\n"
     "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
@@ -1716,6 +1718,79 @@ bool pixelLightingEnabled()
     return enabled;
 }
 
+/* Skin shading on the girls (camera_effects.h): the launcher's soft and sheen
+   amounts, read once; both 0 leaves the shaders as they were. */
+bool skinEnabled(float *soft = nullptr, float *sheen = nullptr)
+{
+    static float kept_soft = -1.0f, kept_sheen = 0.0f;
+    if (kept_soft < 0.0f) recomp_camera_effects_skin(&kept_soft, &kept_sheen);
+    if (soft != nullptr) *soft = kept_soft;
+    if (sheen != nullptr) *sheen = kept_sheen;
+    return kept_soft > 0.0f || kept_sheen > 0.0f;
+}
+
+/* Skin shading in a lit draw's pixel shader, as the SDL GPU presenter does it
+   (skinSource there): where the texel looks like skin and skin.w is set, the
+   lights per pixel with the shadow edge gaining reddened light, and a soft
+   two-lobe highlight toward the camera. Needs light_normal and
+   light_position, which the caller passes down. */
+bool skinShaderSource(std::string &source)
+{
+    static const char functions[] =
+        "float skinMask(float3 c) {\n"
+        "    float hi = max(c.r, max(c.g, c.b)), lo = min(c.r, min(c.g, c.b));\n"
+        "    float sat = (hi - lo) / max(hi, 1e-3f);\n"
+        "    float warm = smoothstep(0.01f, 0.06f, c.r - c.g) * smoothstep(-0.03f, 0.02f, c.g - c.b);\n"
+        "    float amount = smoothstep(0.08f, 0.16f, sat) * (1 - smoothstep(0.62f, 0.78f, sat));\n"
+        "    return warm * amount * smoothstep(0.12f, 0.25f, hi);\n"
+        "}\n"
+        "float3 skinLight(float3 n, float3 world_pos, float k, out float3 sheen) {\n"
+        "    float3 rgb = directional_base.rgb; sheen = 0;\n"
+        "    float3 v = skin_view.xyz;\n"
+        "    float3 scatter = float3(0.3f, 0.08f, 0.04f) * (skin.x * k);\n"
+        "    for (uint i = 0; i < (uint)directional_flags.z; ++i) {\n"
+        "        float3 l = directional_directions[i].xyz; float atten = 1;\n"
+        "        if (light_positions[i].w > 0.5f) {\n"
+        "            l = light_positions[i].xyz - world_pos;\n"
+        "            float d = length(l);\n"
+        "            float denominator = dot(light_attenuation[i].xyz, float3(1, d, d * d));\n"
+        "            atten = d <= light_attenuation[i].w && denominator > 0 ? 1 / denominator : 0;\n"
+        "            l = d > 0 ? l / d : float3(0, 0, 0);\n"
+        "        }\n"
+        "        float ndl = dot(n, l);\n"
+        "        float lambert = max(ndl, 0);\n"
+        "        float wrapped = saturate((ndl + 0.3f) / 1.3f);\n"
+        "        float3 diffuse = lambert + (wrapped - lambert) * scatter;\n"
+        "        rgb += (directional_material.rgb * directional_colors[i].rgb * diffuse + light_ambient[i].rgb) * atten;\n"
+        "        float3 h = normalize(l + v);\n"
+        "        float ndh = saturate(dot(n, h));\n"
+        "        float fresnel = 0.028f + 0.972f * pow(1 - saturate(dot(h, v)), 5);\n"
+        "        float lobes = 0.7f * pow(ndh, 48) + 0.3f * pow(ndh, 12);\n"
+        "        sheen += atten * directional_colors[i].rgb * (lobes * fresnel * saturate(ndl * 4));\n"
+        "    }\n"
+        "    sheen *= 6 * skin.y * k;\n"
+        "    return saturate(rgb);\n"
+        "}\n";
+    const auto pixel = source.find("float4 ps_main(VSOut input) : SV_TARGET {");
+    const std::string start = "    float4 shaded = input.color;\n";
+    const std::string lit = "        if (directional_flags.x > 0.5f) shaded.rgb *= input.color.rgb;\n";
+    const std::string specular = "    if (directional_flags.x > 0.5f && light_view.w > 0) shaded.rgb += input.lit_specular;\n";
+    if (pixel == std::string::npos || source.find(start, pixel) == std::string::npos ||
+        source.find(lit, pixel) == std::string::npos || source.find(specular, pixel) == std::string::npos) return false;
+    source.replace(source.find(specular, pixel), specular.size(), specular + "    shaded.rgb += skin_sheen;\n");
+    source.replace(source.find(lit, pixel), lit.size(),
+        "        float3 lit_rgb = input.color.rgb;\n"
+        "        if (skin.w > 0.5f && directional_flags.x > 0.5f && dot(input.light_normal.xyz, input.light_normal.xyz) > 0) {\n"
+        "            float k = skinMask(sampled.rgb);\n"
+        "            float3 skin_lit = skinLight(normalize(input.light_normal.xyz), input.light_position, k, skin_sheen);\n"
+        "            lit_rgb = lerp(lit_rgb, skin_lit, k);\n"
+        "        }\n"
+        "        if (directional_flags.x > 0.5f) shaded.rgb *= lit_rgb;\n");
+    source.replace(source.find(start, pixel), start.size(), start + "    float3 skin_sheen = 0;\n");
+    source.insert(pixel, functions);
+    return true;
+}
+
 /* Builds the HLSL for one FVF, plus its vertex program when it has one. */
 bool drawShaderSource(
     uint32_t fvf,
@@ -1804,7 +1879,8 @@ bool drawShaderSource(
         compiled_source.insert(vertex, evaluate);
         // Sun shadows anchor on this line; it exists in both lighting modes.
         lighting += "        if (directional_flags.y > 0.5f && dot(n,n)>0) n *= rsqrt(dot(n,n));\n";
-        if (pixel_lighting) {
+        const bool skin = skinEnabled();
+        if (pixel_lighting || skin) {
             // TEXCOORD6..10 belong to fog and sun shadows.
             compiled_source.insert(compiled_source.find("struct VSOut {") + std::strlen("struct VSOut {"),
                 "\n    float3 light_position : TEXCOORD11;\n    float4 light_normal : TEXCOORD12;\n");
@@ -1812,6 +1888,8 @@ bool drawShaderSource(
             lighting.insert(0, "    output.light_position = 0; output.light_normal = 0;\n");
             lighting += "        output.light_position = world_pos;\n"
                 "        output.light_normal = float4(n, length(n));\n";
+        }
+        if (pixel_lighting) {
             const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
             const auto sample = compiled_source.find(pixel);
             if (sample == std::string::npos) return false;
@@ -1827,6 +1905,9 @@ bool drawShaderSource(
             lighting += "        output.color.rgb = evaluateLighting(n, world_pos, output.lit_specular);\n";
         }
         lighting += "    }\n";
+        // Missing anchors leave the shader as it was: no skin, the draw unharmed.
+        if (skin && !skinShaderSource(compiled_source))
+            std::fprintf(stderr, "recomp d3d presenter: skin shading unavailable for fvf 0x%X\n", fvf);
         const auto uv = compiled_source.find("    output.texcoord =");
         if (uv == std::string::npos) return false;
         compiled_source.insert(uv, lighting);
@@ -2028,7 +2109,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, specular and viewer (336 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u + 4u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u + 4u + 8u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -3244,7 +3325,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 336 + 76 + 16 + 4]{};
+    float draw_constants[140 + 192 * 4 + 336 + 76 + 16 + 4 + 8]{};
     // camera_flags: the free camera's character mask and time of day's tint.
     float unlit_tint[3], lit_tint[3];
     presenter->camera.sceneTint(draw, layout.pretransformed, unlit_tint, lit_tint);
@@ -3252,6 +3333,21 @@ RecompD3dPresenterError submitDraw(
         float *camera_flags = draw_constants + 140 + 192 * 4 + 336 + 76 + 16;
         camera_flags[0] = draw.character && !draw.target.offscreen ? 1.0f : 0.0f;
         for (unsigned c = 0; c < 3u; ++c) camera_flags[1 + c] = unlit_tint[c];
+        // Skin shading: the girls' lit, opaque, textured draws (skinShaderSource).
+        float soft = 0.0f, sheen = 0.0f;
+        if (skinEnabled(&soft, &sheen) && draw.character && !draw.target.offscreen && draw.directional.enabled &&
+            !draw.program_count && draw.has_texture && !draw.blend.blend_enable && !draw.has_reflection &&
+            !draw.has_combiner && !draw.four_tap_filter && !presenter->sun.casting) {
+            const float *m = draw.view_projection;
+            const float length = std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]);
+            if (length > 1e-6f && std::isfinite(length)) {
+                float *skin = camera_flags + 4;
+                skin[0] = soft;
+                skin[1] = sheen;
+                skin[3] = 1.0f;
+                for (unsigned c = 0; c < 3u; ++c) skin[4 + c] = -m[3 + 4 * c] / length;
+            }
+        }
     }
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
