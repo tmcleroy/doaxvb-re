@@ -119,7 +119,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
     "    row_major float4x4 fog_world_view[4];\n"
     "    float4 combiner[4];\n"
-    "    float4 camera_flags; // x: a character's draw (d3d_presenter_d3d11_camera.h)\n"
+    "    float4 camera_flags; // x: a character's draw, yzw: time of day's tint (d3d_presenter_d3d11_camera.h)\n"
     "}\n"
     "float fogFactor(float depth) {\n"
     "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
@@ -3229,8 +3229,14 @@ RecompD3dPresenterError submitDraw(
        draw actually consumed, and only the latter can explain the frame. */
     if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
     float draw_constants[140 + 192 * 4 + 336 + 76 + 16 + 4]{};
-    // camera_flags: the free camera's character mask.
-    draw_constants[140 + 192 * 4 + 336 + 76 + 16] = draw.character && !draw.target.offscreen ? 1.0f : 0.0f;
+    // camera_flags: the free camera's character mask and time of day's tint.
+    float unlit_tint[3], lit_tint[3];
+    presenter->camera.sceneTint(draw, layout.pretransformed, unlit_tint, lit_tint);
+    {
+        float *camera_flags = draw_constants + 140 + 192 * 4 + 336 + 76 + 16;
+        camera_flags[0] = draw.character && !draw.target.offscreen ? 1.0f : 0.0f;
+        for (unsigned c = 0; c < 3u; ++c) camera_flags[1 + c] = unlit_tint[c];
+    }
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -3282,6 +3288,9 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants+68, light.material_diffuse, sizeof light.material_diffuse);
         std::memcpy(constants+72, light.directions, sizeof light.directions);
         std::memcpy(constants+104, light.colors, sizeof light.colors);
+        // Time of day tints lit scenery's lights.
+        for (uint32_t i = 0; i < 8u; ++i)
+            for (unsigned c = 0; c < 3u; ++c) constants[104 + i * 4 + c] *= lit_tint[c];
         constants[136]=1;
         constants[137]=light.normalize ? 1.0f:0.0f;
         constants[138]=static_cast<float>(light.count);

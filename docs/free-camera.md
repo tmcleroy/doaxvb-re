@@ -592,7 +592,10 @@ subject comes from the characters' draws, `recomp_effects::observeDraw`, shared
 with the SDL GPU presenter), the glare hidden behind things, backdrops,
 transparent screenshots (the next frame, with only the characters over
 nothing, saved with its alpha and depth picture, not shown), motion blur and
-Record video (ffmpeg from `RECOMP_FFMPEG` or the PATH) work there too. Big
+Record video (ffmpeg from `RECOMP_FFMPEG` or the PATH) work there too, and
+time of day tints the baked stage and sky as on SDL GPU (`camera_flags.yzw`
+on unlit draws and backgrounds before the scene, and the lights of lit
+scenery; `sceneTint`). Big
 screenshots are saved at the frame's own size: this presenter sizes its
 targets once. This was written and compiled (llvm-mingw) without a Windows
 machine to run it on, and its shaders were checked only with glslang's HLSL

@@ -49,6 +49,7 @@ inline bool cameraDepthShaderSource(std::string &source)
     const auto ending = source.rfind(last);
     if (signature_end == std::string::npos || ending == std::string::npos || ending < signature_end) return false;
     source.replace(ending, last.size(),
+        "    shaded.rgb *= camera_flags.yzw;\n"
         "    camera_depth = float4(input.camera_view_depth, camera_flags.x, 0, saturate(shaded.a));\n"
         "    return shaded;\n}");
     const auto body = source.find('{', signature_end);
@@ -111,6 +112,10 @@ struct D3d11CameraEffects {
     bool sun_seen = false;
     float sun_dir[3] = {}, sun_camera[16] = {};
     float subject_offset = 0.0f, subject_depth = 0.0f;
+    // Time of day's tint for what the game does not light (the baked stage
+    // and the sky), taken at each present; a 3D draw since the present.
+    bool tint_on = false, scene_drawn = false;
+    float tint_rgb[3] = {1.0f, 1.0f, 1.0f};
     // A transparent screenshot's frame: only the characters, over nothing,
     // saved with its alpha and a depth picture, not shown.
     bool clear_shot = false;
@@ -364,6 +369,8 @@ struct D3d11CameraEffects {
         }
         recomp_camera_effects_take(&settings);
         recomp_camera_effects_report_subject(subject);
+        tint_on = recomp_camera_effects_scene_tint(tint_rgb);
+        scene_drawn = false;
         // The next frame's draws write the view depth while the effects are on.
         depth_wanted = g_d3d11_camera_depth && (settings.active || clear_shot);
         if (depth_wanted) wantDepth(device, main_width, main_height, samples);
@@ -491,6 +498,22 @@ struct D3d11CameraEffects {
         const float far_away[4] = {65504.0f, 0.0f, 0.0f, 0.0f};
         context->ClearRenderTargetView(depth_target, far_away);
         depth_drawn = true;
+    }
+
+    /* Time of day on one draw, as the SDL GPU presenter tints: unlit 3D draws,
+       and 2D backgrounds before them (the sky), take the tint in the shader
+       (`unlit`); lit scenery keeps its relit lights and tints only them
+       (`lit`, applied to its light colours); characters only relight. */
+    void sceneTint(const RecompD3dPresenterDrawCommand &draw, bool pretransformed, float unlit[3], float lit[3])
+    {
+        for (unsigned c = 0; c < 3u; ++c) unlit[c] = lit[c] = 1.0f;
+        if (draw.target.offscreen) return;
+        if (tint_on && !draw.character) {
+            const bool background = pretransformed && !scene_drawn;
+            if ((!pretransformed && !draw.directional.enabled) || background) std::memcpy(unlit, tint_rgb, sizeof tint_rgb);
+            else if (draw.directional.enabled && !draw.program_count) std::memcpy(lit, tint_rgb, sizeof tint_rgb);
+        }
+        if (!pretransformed) scene_drawn = true;
     }
 
     // Each draw on the main target: the sun, and the subject among the characters.
