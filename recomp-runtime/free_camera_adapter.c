@@ -192,6 +192,9 @@ static struct {
     RecompCameraPath path;
     bool playing;
     unsigned play_frames;
+    /* A playing path's look at this frame, blended from its views'. */
+    bool play_looked;
+    RecompCameraEffects play_look;
     /* Tracking her (the Track her row): the point followed, smoothed, and
        for following, the camera's place from it. */
     bool tracking, following;
@@ -465,7 +468,12 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
     }
     int steps = held_repeat(&state.value_repeat, (int)right - (int)left, now, &released);
     if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_PATH) {
-        if (steps > 0 && state.started) recomp_camera_path_add(&state.path, &state.camera);
+        if (steps > 0 && state.started) {
+            /* The view keeps its look: the settings' effects as they are now. */
+            RecompCameraEffects look;
+            recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &look);
+            recomp_camera_path_add_look(&state.path, &state.camera, &look);
+        }
         else if (steps < 0) recomp_camera_path_remove(&state.path);
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_PATH_PLAY) {
         if (steps > 0 && state.path.count >= 2u) {
@@ -795,7 +803,8 @@ static void multiply(const float a[16], const float b[16], float out[16])
    roll only narrows. */
 static void turn_view(uint32_t object)
 {
-    const float roll = state.settings_ready ? state.settings.roll * 3.14159265f / 180.0f : 0.0f;
+    const float roll = state.playing && state.play_looked ? state.play_look.roll :
+        state.settings_ready ? state.settings.roll * 3.14159265f / 180.0f : 0.0f;
     if (roll == 0.0f) return;
     const float c = cosf(roll), s = sinf(roll);
     const float turn[16] = {c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -895,6 +904,7 @@ static void build_camera(void)
                 const unsigned steps = 60u * state.settings.path_seconds * (state.blur ? state.blur : 1u);
                 const float t = (float)state.play_frames / (float)steps;
                 recomp_camera_path_sample(&state.path, t, &state.camera);
+                state.play_looked = recomp_camera_path_sample_look(&state.path, t, &state.play_look);
                 /* A frame run unseen is not one of them. */
                 if (frame != state.unseen_frame && ++state.play_frames > steps)
                     state.playing = false;
@@ -1317,6 +1327,14 @@ void recomp_free_camera_overlay(bool viewer)
         state.settings_ready = true;
     }
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
+    if (state.playing && state.play_looked) {
+        /* A playing path's look, through this frame's lens; screenshots keep
+           the settings' background. */
+        const bool transparent = effects.transparent;
+        effects = state.play_look;
+        effects.fov = state.camera.fov;
+        effects.transparent = transparent;
+    }
     effects.active = effects.active && state.active && state.started;
     effects.recording = state.playing && state.settings.record && state.active;
     step_slow_motion();

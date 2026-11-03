@@ -411,7 +411,14 @@ logarithmic out to 100 units.
 A camera path plays through its keyframes along a Catmull-Rom curve
 (`camera_path.c`): position, heading the short way round, pitch, field of
 view and focus, eased in and out over the whole length, one step a frame at
-60 frames a second. With Record video on, the SDL GPU presenter sends every
+60 frames a second. Each keyframe also keeps its look, the settings' effects
+when it was added, and a playing path shows the look blended on the same
+timing (`recomp_camera_path_sample_look`): exposure, contrast, saturation,
+bloom, vignette, grain, roll, aperture, the key light, a manual focus and the
+hour (when both views set one) blend, so a path can pull focus, roll, or run
+the day from morning to night; the filter, depth of field on or off, the
+letterbox and the stage's own hour change halfway between views. With Record
+video on, the SDL GPU presenter sends every
 frame shown while it plays (effects included, the panel not) to ffmpeg as raw
 BGRA, which writes an H.264 MP4 beside the screenshots. Frames are downloaded
 into a ring of three buffers and written two presents later, so the GPU is

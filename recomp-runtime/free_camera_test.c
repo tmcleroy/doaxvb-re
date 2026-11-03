@@ -135,6 +135,23 @@ int main(void)
     recomp_camera_path_sample(&path, 0.25f, &sampled);
     check(fabsf(sampled.heading) > 2.9f, "turns through pi, not through zero");
     check(recomp_camera_path_remove(&path) && path.count == 2u, "removes the last view");
+    RecompCameraEffects looked;
+    check(!recomp_camera_path_sample_look(&path, 0.5f, &looked), "views without looks have none");
+
+    /* Looks: amounts blend, choices change halfway, the stage's own hour stays. */
+    RecompCameraPath looks = {0};
+    RecompCameraEffects look = {0};
+    look.exposure = -1.0f; look.hour = 6.0f; look.filter = RECOMP_CAMERA_FILTER_NONE; look.light_angle = 3.0f;
+    recomp_camera_path_add_look(&looks, &key, &look);
+    look.exposure = 1.0f; look.hour = 22.0f; look.filter = RECOMP_CAMERA_FILTER_MONO; look.light_angle = -3.0f;
+    recomp_camera_path_add_look(&looks, &key, &look);
+    check(recomp_camera_path_sample_look(&looks, 0.5f, &looked) && near(looked.exposure, 0.0f) &&
+        near(looked.hour, 14.0f), "exposure and hour blend");
+    check(fabsf(looked.light_angle) > 3.0f, "the key light turns the short way round");
+    recomp_camera_path_sample_look(&looks, 0.2f, &looked);
+    check(looked.filter == RECOMP_CAMERA_FILTER_NONE, "the first view's filter until halfway");
+    recomp_camera_path_sample_look(&looks, 0.8f, &looked);
+    check(looked.filter == RECOMP_CAMERA_FILTER_MONO, "the next view's filter after");
 
     if (failures == 0) printf("free camera test passed\n");
     return failures == 0 ? 0 : 1;

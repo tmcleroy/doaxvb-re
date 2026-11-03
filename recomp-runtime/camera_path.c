@@ -5,11 +5,21 @@
 
 static const float PI = 3.14159265f;
 
-bool recomp_camera_path_add(RecompCameraPath *path, const RecompFreeCamera *view)
+bool recomp_camera_path_add_look(RecompCameraPath *path, const RecompFreeCamera *view,
+    const RecompCameraEffects *look)
 {
     if (path == NULL || view == NULL || path->count >= RECOMP_CAMERA_PATH_KEYS) return false;
-    path->keys[path->count++] = *view;
+    path->keys[path->count] = *view;
+    path->looked[path->count] = look != NULL;
+    if (look != NULL) path->looks[path->count] = *look;
+    else memset(&path->looks[path->count], 0, sizeof path->looks[0]);
+    ++path->count;
     return true;
+}
+
+bool recomp_camera_path_add(RecompCameraPath *path, const RecompFreeCamera *view)
+{
+    return recomp_camera_path_add_look(path, view, NULL);
 }
 
 bool recomp_camera_path_remove(RecompCameraPath *path)
@@ -37,9 +47,10 @@ static void unwrapped_headings(const RecompCameraPath *path, float out[RECOMP_CA
     }
 }
 
-bool recomp_camera_path_sample(const RecompCameraPath *path, float t, RecompFreeCamera *view)
+/* The span (from key `span` to the next) at `t`, eased over the whole path,
+   and how far along it. */
+static unsigned locate(const RecompCameraPath *path, float t, float *u)
 {
-    if (path == NULL || view == NULL || path->count < 2u) return false;
     if (!(t > 0.0f)) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     /* Ease in and out over the whole path. */
@@ -48,7 +59,45 @@ bool recomp_camera_path_sample(const RecompCameraPath *path, float t, RecompFree
     float at = t * (float)spans;
     unsigned span = (unsigned)at;
     if (span >= spans) span = spans - 1u;
-    const float u = at - (float)span;
+    *u = at - (float)span;
+    return span;
+}
+
+static float blend(float a, float b, float u)
+{
+    return a + (b - a) * u;
+}
+
+bool recomp_camera_path_sample_look(const RecompCameraPath *path, float t, RecompCameraEffects *look)
+{
+    if (path == NULL || look == NULL || path->count < 2u) return false;
+    for (unsigned i = 0u; i < path->count; ++i)
+        if (!path->looked[i]) return false;
+    float u;
+    const unsigned span = locate(path, t, &u);
+    const RecompCameraEffects *b = &path->looks[span], *c = &path->looks[span + 1u];
+    *look = u < 0.5f ? *b : *c;
+    look->aperture = blend(b->aperture, c->aperture, u);
+    look->roll = blend(b->roll, c->roll, u);
+    look->vignette = blend(b->vignette, c->vignette, u);
+    look->grain = blend(b->grain, c->grain, u);
+    look->exposure = blend(b->exposure, c->exposure, u);
+    look->contrast = blend(b->contrast, c->contrast, u);
+    look->saturation = blend(b->saturation, c->saturation, u);
+    look->bloom = blend(b->bloom, c->bloom, u);
+    look->light_strength = blend(b->light_strength, c->light_strength, u);
+    look->light_angle = b->light_angle + remainderf(c->light_angle - b->light_angle, 2.0f * PI) * u;
+    if (b->hour >= 0.0f && c->hour >= 0.0f) look->hour = blend(b->hour, c->hour, u);
+    if (b->focus > 0.0f && c->focus > 0.0f) look->focus = blend(b->focus, c->focus, u);
+    look->active = b->active || c->active;
+    return true;
+}
+
+bool recomp_camera_path_sample(const RecompCameraPath *path, float t, RecompFreeCamera *view)
+{
+    if (path == NULL || view == NULL || path->count < 2u) return false;
+    float u;
+    const unsigned span = locate(path, t, &u);
     const unsigned ia = span > 0u ? span - 1u : 0u, ib = span, ic = span + 1u;
     const unsigned id = span + 2u < path->count ? span + 2u : path->count - 1u;
     const RecompFreeCamera *a = &path->keys[ia], *b = &path->keys[ib], *c = &path->keys[ic], *d = &path->keys[id];
