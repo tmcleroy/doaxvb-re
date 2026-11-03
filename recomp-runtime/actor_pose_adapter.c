@@ -89,6 +89,11 @@ enum {
 static const float HIDE_DEPTH = 100.0f;
 
 void sub_000B01E0(void);
+void sub_000AE350(void);
+void sub_000AE3F0(void);
+
+/* Rebuilding a frozen scene's skeletons for eye contact. */
+static bool rebuilding_frozen;
 void sub_000636D0(void);
 
 static struct {
@@ -230,8 +235,9 @@ static void build_skeleton_inner(void)
 {
     uint32_t actor = recomp_runtime.registers.eax;
     /* Some scenes build skeletons in a task that also draws, which a frozen
-       scene keeps running (the pool): keep the pose already built. */
-    if (actor < ACTOR_COUNT && recomp_scene_freeze_holding()) {
+       scene keeps running (the pool): keep the pose already built, unless
+       eye contact rebuilds it (recomp_actor_pose_look_while_frozen). */
+    if (actor < ACTOR_COUNT && recomp_scene_freeze_holding() && !rebuilding_frozen) {
         recomp_runtime.registers.esp += 4u;
         return;
     }
@@ -507,7 +513,44 @@ static void build_skeleton(void)
             aim_eye(actor, 17u);
         }
     }
-    if (actor < ACTOR_COUNT && !skipped) record_bones(actor);
+    if (actor < ACTOR_COUNT && !skipped && !rebuilding_frozen) record_bones(actor);
+}
+
+/* A frozen scene builds no skeletons, so eye contact would leave her looking
+   where she was. With it on, each frozen frame builds every character's
+   skeleton again as the game does when it pauses its own world (0x000AF380
+   with 0x004D56EF set: the build, then the joint banks from the bones,
+   0x000AE350 and 0x000AE3F0, without stepping the animation), so her head
+   follows the camera. Not added to the pose history. 0x000AE3F0 inverts
+   each bone through the scratch matrix at 0x00A24190, which is put back. */
+void recomp_actor_pose_look_while_frozen(void)
+{
+    if (!look.on || !recomp_scene_freeze_holding() || history.back != 0u) return;
+    const RecompRegisters registers = recomp_runtime.registers;
+    RecompFpuContext fpu;
+    recomp_fpu_context_save(&fpu);
+    uint8_t scratch[64];
+    recomp_guest_load(scratch, 0x00A24190u, sizeof scratch);
+    rebuilding_frozen = true;
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
+        if (!active(actor)) continue;
+        recomp_runtime.registers.esp = registers.esp - 4u;
+        *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+        recomp_runtime.registers.eax = actor;
+        build_skeleton();
+        recomp_runtime.registers.esp = registers.esp - 4u;
+        *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+        recomp_runtime.registers.edx = actor;
+        sub_000AE350();
+        recomp_runtime.registers.esp = registers.esp - 4u;
+        *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+        recomp_runtime.registers.eax = actor;
+        sub_000AE3F0();
+    }
+    rebuilding_frozen = false;
+    recomp_guest_store(0x00A24190u, scratch, sizeof scratch);
+    recomp_runtime.registers = registers;
+    recomp_fpu_context_restore(&fpu);
 }
 
 unsigned recomp_actor_pose_history_step(int step)
@@ -545,6 +588,10 @@ void recomp_actor_pose_frame(void)
     recomp_guest_store(root_of(pose.actor) + ROOT_POSITION, pose.position, sizeof pose.position);
 }
 #else
+void recomp_actor_pose_look_while_frozen(void)
+{
+}
+
 bool recomp_actor_pose_character_world(const float world[16])
 {
     (void)world;

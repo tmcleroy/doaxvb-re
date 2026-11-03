@@ -459,8 +459,18 @@ for each build the camera's position stands in for the ball at
 full weight, and both are put back after. The game limits the turn (60
 degrees each way, 60 down, 10 up; the neck takes 30% and the head 70%). With
 eyes, each eye bone (21 and 17) then turns toward the camera about its own
-centre by up to 23 degrees, taking its +Z as its line of sight; that axis is
-an assumption not yet checked close up.
+centre by up to 23 degrees, taking its +Z as its line of sight (measured: with
+the camera 60 degrees to her side the head's +Z ends 39 degrees off it, the
+eyes' 22 degrees nearer than the head's).
+
+A frozen scene builds no skeletons, so with eye contact on each frozen frame
+builds them again (`recomp_actor_pose_look_while_frozen`), as the game does
+when it pauses its own world: 0x000AF380 with 0x004D56EF set still runs the
+build and the joint banks (0x000AE350, 0x000AE3F0) but does not step the
+animation. Her pose stays as it was (the hips do not move) and her head
+follows the camera. These builds are not added to the pose history, and slow
+motion and stepped-back poses are left alone. 0x000AE3F0 inverts each bone
+through the scratch matrix at 0x00A24190, which is put back after.
 
 The effects apply only while the camera flies and only to the window and
 screenshots; the game's own copies of its frame stay as it drew them. They

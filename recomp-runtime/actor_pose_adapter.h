@@ -36,6 +36,9 @@ void recomp_actor_pose_choose(uint32_t actor);
 /* Whether a draw's WORLD matrix is one of the palettes built this frame
    from a character's bones: true only for the characters' own pieces. */
 bool recomp_actor_pose_character_world(const float world[16]);
+/* With eye contact on in a frozen scene, builds the characters' skeletons
+   again so they look at the camera; once at the start of a frozen frame. */
+void recomp_actor_pose_look_while_frozen(void);
 /* Characters whose bit is set are moved far below the ground. */
 void recomp_actor_pose_set_hidden(uint32_t mask);
 /* Where the chosen character's hips are, for the camera to face. */

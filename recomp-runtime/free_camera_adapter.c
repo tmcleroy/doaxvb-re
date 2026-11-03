@@ -976,6 +976,8 @@ static bool replace_matrix(uint32_t address, const float old[16], const float ma
    device, still hold the object's last matrices the new ones replace them. */
 static void frame_started(void)
 {
+    /* Slow motion blends poses of its own; stepped-back poses stay as they were. */
+    if (state.active && state.started && !state.slowed) recomp_actor_pose_look_while_frozen();
     if (!state.active || !state.started || !recomp_scene_freeze_holding()) return;
     uint32_t frame = recomp_d3d_frame_adapter_swap_counter();
     if (state.game_built_frame + 1u >= frame) return;
