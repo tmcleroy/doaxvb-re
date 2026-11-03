@@ -54,6 +54,17 @@ int main(void)
     recomp_camera_settings_default(&settings);
     recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
     check(!drawn.active, "the defaults change nothing");
+
+    /* Every row is on exactly one page. */
+    unsigned seen[RECOMP_CAMERA_SETTING_COUNT] = {0};
+    for (unsigned p = 0u; p < recomp_camera_settings_page_count(); ++p) {
+        const RecompCameraSettingsPage *page = recomp_camera_settings_page(p);
+        check(page->count > 0u && page->name != NULL, "each page has a name and rows");
+        for (unsigned r = 0u; r < page->count; ++r) ++seen[page->rows[r]];
+    }
+    unsigned once = 0u;
+    for (unsigned r = 0u; r < RECOMP_CAMERA_SETTING_COUNT; ++r) once += seen[r] == 1u;
+    check(once == RECOMP_CAMERA_SETTING_COUNT, "every row is on one page");
     recomp_camera_settings_change(&settings, RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD, 1, &fov, 0.0f);
     recomp_camera_settings_effects(&settings, fov, 0.0f, &drawn);
     check(drawn.active && drawn.depth_of_field && drawn.focus == RECOMP_CAMERA_FOCUS_SUBJECT && drawn.aperture == 2.0f,

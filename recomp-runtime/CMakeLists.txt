@@ -732,6 +732,7 @@ if(RECOMP_PROGRAM_DIR)
         overlay_text.c
         camera_effects.c
         camera_settings.c
+        camera_store.c
         unlock_swimsuits.c
         ui_log.c
         d3d_creation_model.c
@@ -983,6 +984,7 @@ add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
 add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
 add_executable(recomp_camera_effects_test camera_effects.c camera_settings.c camera_effects_test.c)
+add_executable(recomp_camera_store_test camera_store.c camera_settings.c camera_path.c camera_effects.c camera_store_test.c)
 add_executable(recomp_stage_lights_test stage_lights.c time_of_day.c stage_lights_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
 if(WIN32)
@@ -999,6 +1001,7 @@ if(NOT MSVC)
     target_link_libraries(recomp_animation_skeleton_test PRIVATE m)
     target_link_libraries(recomp_free_camera_test PRIVATE m)
     target_link_libraries(recomp_camera_effects_test PRIVATE m)
+    target_link_libraries(recomp_camera_store_test PRIVATE m)
     target_link_libraries(recomp_stage_lights_test PRIVATE m)
     target_link_libraries(recomp_animation_pose_test PRIVATE m)
     target_link_libraries(recomp_d3d_pose_replay_test PRIVATE m)
@@ -1031,6 +1034,7 @@ add_test(NAME recomp-runtime-scene-freeze COMMAND recomp_scene_freeze_test)
 add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-overlay-text COMMAND recomp_overlay_text_test)
 add_test(NAME recomp-runtime-camera-effects COMMAND recomp_camera_effects_test)
+add_test(NAME recomp-runtime-camera-store COMMAND recomp_camera_store_test)
 add_test(NAME recomp-runtime-stage-lights COMMAND recomp_stage_lights_test)
 add_test(NAME recomp-runtime-screenshot COMMAND recomp_screenshot_test)
 add_test(NAME recomp-runtime-viewer-scene COMMAND recomp_viewer_scene_test)

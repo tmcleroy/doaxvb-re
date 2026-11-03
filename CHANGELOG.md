@@ -35,7 +35,8 @@
   (and eyes) toward the camera through the game's own look-at, paused or
   not. The girls' eyes (open, closed, a wink) and mouths (a smile, open,
   and more) can be held, a girl can be moved and turned for a picture, and
-  a rim light and a fill light light the girls. See
+  a rim light and a fill light light the girls. The settings come in pages
+  and, with the camera spots and path, are kept between runs. See
   `docs/free-camera.md`.
 
 ## 0.6.0 Beta — 2026-10-27

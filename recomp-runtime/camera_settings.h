@@ -125,6 +125,15 @@ typedef struct RecompCameraSettings {
     unsigned mouth;       /* 0 the game's own, else held */
 } RecompCameraSettings;
 
+/* The list in pages, each a few rows: every row is on exactly one page. */
+typedef struct RecompCameraSettingsPage {
+    const char *name;
+    const RecompCameraSettingRow *rows;
+    unsigned count;
+} RecompCameraSettingsPage;
+unsigned recomp_camera_settings_page_count(void);
+const RecompCameraSettingsPage *recomp_camera_settings_page(unsigned page);
+
 void recomp_camera_settings_default(RecompCameraSettings *settings);
 /* The eye and mouth shapes held on every girl (body_morph_adapter.h), -1
    for the game's own. */

@@ -314,12 +314,20 @@ off.
 ## Camera settings
 
 Tab, or Back pressed and let go without another button, opens a list of
-camera settings in the panel while the camera flies; it scrolls when it is
-longer than the panel. Keys 1 to 4 go to a saved camera spot at any time
-while flying, and Shift with them saves the view there; spots last until the
-runner quits. Up and down (arrow keys
-or the d-pad) choose a row and left and right change it; held, they keep
-going. While the list is open the arrows and the d-pad belong to it, and
+camera settings in the panel while the camera flies, in pages: Camera, Lens,
+Colour, Light, Girls, Shots and Path. The first line names the page, and left
+and right on it turn the page. Keys 1 to 4 go to a saved camera spot at any
+time while flying, and Shift with them saves the view there. Up and down
+(arrow keys or the d-pad) choose a row and left and right change it; held,
+they keep going.
+
+The settings, the camera spots and the camera path (each view with its look)
+are kept between runs in `.recomp-storage/free-camera-v1.txt` beside the
+game's saves (`camera_store.c`): read when the camera first needs its
+settings, written within a second of a change, as text a value a line, so a
+file from another version reads what it knows. Move her and Record video are
+not kept, so a run never starts moving a girl or recording. Placed girls are
+not kept either. While the list is open the arrows and the d-pad belong to it, and
 the sticks, WASD and the right mouse button still fly.
 
 | Setting | Values |
@@ -544,8 +552,8 @@ game's own diffuse model, so a rim light tints the surfaces that face up or
 away rather than drawing a sharp outline.
 
 The effects apply only while the camera flies and only to the window and
-screenshots; the game's own copies of its frame stay as it drew them. They
-last until the runner quits. The rows and their steps are
+screenshots; the game's own copies of its frame stay as it drew them. The
+rows, their pages and their steps are
 `recomp-runtime/camera_settings.c`; what the presenter draws is
 `camera_effects.h`.
 

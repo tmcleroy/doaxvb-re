@@ -22,6 +22,8 @@
 #ifdef RECOMP_FULL_PROGRAM
 #include "animation_probe.h"
 #include "d3d_draw_adapter.h"
+#include "camera_store.h"
+#include "kernel_abi.h"
 #include "d3d_frame_adapter.h"
 #include "game_scheduler.h"
 
@@ -174,7 +176,10 @@ static struct {
     uint32_t trace_lines;
     /* The camera settings list (Tab or BACK alone). */
     bool settings_open, settings_key_held, back_held, back_combo, settings_ready;
+    /* The chosen row (-1 on a page's name), its page and its line there. */
     int setting_row;
+    unsigned setting_page;
+    int setting_line;
     bool reset_row_held, put_back_held;
     /* The field of view the camera started with, for a reset. */
     float start_fov;
@@ -219,6 +224,54 @@ static struct {
     bool back_key_held;
     HeldRepeat pose_repeat;
 } state = {.enabled = -1, .controller_hints = -1};
+
+/* The settings, camera spots and path are kept between runs
+   (camera_store.h): read when the settings are first needed, and written
+   once a second at most, when they changed. */
+static RecompCameraStore kept;
+static uint64_t kept_checked;
+
+static void store_snapshot(RecompCameraStore *store)
+{
+    memset(store, 0, sizeof *store);
+    store->settings = state.settings;
+    store->settings.move_her = false;
+    store->settings.record = false;
+    memcpy(store->spots, state.spots, sizeof store->spots);
+    memcpy(store->spot_saved, state.spot_saved, sizeof store->spot_saved);
+    store->path = state.path;
+}
+
+static void settings_begin(void)
+{
+    recomp_camera_settings_default(&state.settings);
+    RecompCameraStore store;
+    store_snapshot(&store);
+    if (recomp_camera_store_load(recomp_disc_root_path, &store)) {
+        state.settings = store.settings;
+        memcpy(state.spots, store.spots, sizeof state.spots);
+        memcpy(state.spot_saved, store.spot_saved, sizeof state.spot_saved);
+        state.path = store.path;
+        fprintf(stderr, "recomp free camera: settings, %u spots and a %u-view path kept from the last run\n",
+            (unsigned)(store.spot_saved[0] + store.spot_saved[1] + store.spot_saved[2] + store.spot_saved[3]),
+            store.path.count);
+    }
+    store_snapshot(&kept);
+    state.settings_ready = true;
+}
+
+static uint64_t milliseconds(void);
+
+static void keep_settings(void)
+{
+    const uint64_t now = milliseconds();
+    if (!state.settings_ready || now - kept_checked < 1000u) return;
+    kept_checked = now;
+    RecompCameraStore store;
+    store_snapshot(&store);
+    if (memcmp(&store, &kept, sizeof store) == 0) return;
+    if (recomp_camera_store_save(recomp_disc_root_path, &store)) kept = store;
+}
 
 static uint64_t milliseconds(void)
 {
@@ -443,10 +496,7 @@ static void reset_settings(void)
    left and right change it, held to keep going. */
 static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
 {
-    if (!state.settings_ready) {
-        recomp_camera_settings_default(&state.settings);
-        state.settings_ready = true;
-    }
+    if (!state.settings_ready) settings_begin();
     bool tab = state.active && recomp_input_host_key(RECOMP_INPUT_HOST_KEY_TAB);
     if (tab && !state.settings_key_held) state.settings_open = !state.settings_open;
     state.settings_key_held = tab;
@@ -466,14 +516,25 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
     bool down = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_DOWN) || (gamepad->buttons & XBOX_DPAD_DOWN) != 0u;
     bool left = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT) || (gamepad->buttons & XBOX_DPAD_LEFT) != 0u;
     bool right = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT) || (gamepad->buttons & XBOX_DPAD_RIGHT) != 0u;
+    /* The list is in pages: a page's first line names it, and left and
+       right there turn the page; the rows below it are that page's. */
+    const RecompCameraSettingsPage *page = recomp_camera_settings_page(state.setting_page);
+    const int lines = (int)page->count + 1;
     int rows = held_repeat(&state.row_repeat, (int)down - (int)up, now, &released);
     if (rows != 0) {
         /* Rows move one at a time however long the key is held. */
-        int row = state.setting_row + (rows > 0 ? 1 : -1);
-        state.setting_row = (row % RECOMP_CAMERA_SETTING_COUNT + RECOMP_CAMERA_SETTING_COUNT) %
-            RECOMP_CAMERA_SETTING_COUNT;
+        const int line = state.setting_line + (rows > 0 ? 1 : -1);
+        state.setting_line = (line % lines + lines) % lines;
     }
     int steps = held_repeat(&state.value_repeat, (int)right - (int)left, now, &released);
+    if (steps != 0 && state.setting_line == 0) {
+        const int pages = (int)recomp_camera_settings_page_count();
+        state.setting_page = (unsigned)((((int)state.setting_page + (steps > 0 ? 1 : -1)) % pages + pages) % pages);
+        steps = 0;
+    }
+    page = recomp_camera_settings_page(state.setting_page);
+    if (state.setting_line > (int)page->count) state.setting_line = (int)page->count;
+    state.setting_row = state.setting_line == 0 ? -1 : (int)page->rows[state.setting_line - 1];
     if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_PATH) {
         if (steps > 0 && state.started) {
             /* The view keeps its look: the settings' effects as they are now. */
@@ -494,7 +555,7 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         reset_settings();
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE) {
         step_pose(steps > 0 ? 1 : -1);
-    } else if (steps != 0) {
+    } else if (steps != 0 && state.setting_row >= 0) {
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
     }
@@ -1186,12 +1247,11 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
 
     if (state.settings_open) {
         recomp_overlay_set_title(text, "CAMERA SETTINGS");
-        /* A window of rows round the chosen one when they do not all fit. */
-        enum { SHOWN = 16 };
-        int first = state.setting_row - SHOWN / 2;
-        if (first > RECOMP_CAMERA_SETTING_COUNT - SHOWN) first = RECOMP_CAMERA_SETTING_COUNT - SHOWN;
-        if (first < 0) first = 0;
-        for (int row = first; row < RECOMP_CAMERA_SETTING_COUNT && row < first + SHOWN; ++row) {
+        const RecompCameraSettingsPage *page = recomp_camera_settings_page(state.setting_page);
+        recomp_overlay_add_line(text, "%s Page: %s (%u of %u, left/right turns)", state.setting_line == 0 ? ">" : " ",
+            page->name, state.setting_page + 1u, recomp_camera_settings_page_count());
+        for (unsigned line = 0u; line < page->count; ++line) {
+            const int row = (int)page->rows[line];
             char value[RECOMP_OVERLAY_LINE_SIZE];
             recomp_camera_settings_describe(&state.settings, (RecompCameraSettingRow)row, state.camera.fov,
                 state.character_focus, value, sizeof value);
@@ -1397,10 +1457,7 @@ void recomp_free_camera_overlay(bool viewer)
     recomp_overlay_publish(&text);
     /* The effects show only while flying. */
     RecompCameraEffects effects;
-    if (!state.settings_ready) {
-        recomp_camera_settings_default(&state.settings);
-        state.settings_ready = true;
-    }
+    if (!state.settings_ready) settings_begin();
     recomp_camera_settings_effects(&state.settings, state.camera.fov, state.character_focus, &effects);
     if (state.playing && state.play_looked) {
         /* A playing path's look, through this frame's lens; screenshots keep
@@ -1422,6 +1479,7 @@ void recomp_free_camera_overlay(bool viewer)
         effects.backdrop = false;
     }
     recomp_camera_effects_publish(&effects);
+    keep_settings();
     apply_studio_lights();
     int eyes = -1, mouth = -1;
     if (state.active && state.started) recomp_camera_settings_face(&state.settings, &eyes, &mouth);
