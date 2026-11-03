@@ -119,6 +119,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 fog_flags; // enabled, Z depth, range, visualization\n"
     "    row_major float4x4 fog_world_view[4];\n"
     "    float4 combiner[4];\n"
+    "    float4 camera_flags; // x: a character's draw (d3d_presenter_d3d11_camera.h)\n"
     "}\n"
     "float fogFactor(float depth) {\n"
     "    if (fog_params.w == 1) return saturate(exp(-depth * fog_params.z));\n"
@@ -1567,6 +1568,10 @@ RecompD3dPresenterError bindTarget(
         depth_view == presenter->depth_view) {
         ID3D11RenderTargetView *targets[] = {color_view, presenter->gbuffer.target};
         presenter->context->OMSetRenderTargets(2u, targets, depth_view);
+    } else if (presenter->camera.depthTarget() != nullptr && !presenter->sun.casting && !target.offscreen &&
+               depth_view == presenter->depth_view) {
+        ID3D11RenderTargetView *targets[] = {color_view, presenter->camera.depthTarget()};
+        presenter->context->OMSetRenderTargets(2u, targets, depth_view);
     } else {
         presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
     }
@@ -1601,6 +1606,8 @@ RecompD3dPresenterError submitClear(
         const float zero[4]{};
         presenter->context->ClearRenderTargetView(presenter->gbuffer.target, zero);
     }
+    if (!clear.target.offscreen && clear.clear_depth && depth_view == presenter->depth_view)
+        presenter->camera.clearDepth(presenter->context);
     constexpr float byte_to_float = 1.0f / 255.0f;
     const float color[] = {
         static_cast<float>((clear.color >> 16u) & 0xffu) * byte_to_float,
@@ -1845,6 +1852,7 @@ bool drawShaderSource(
         compiled_source.insert(0, "#define EXPLICIT_COVERAGE 1\n");
     }
     if (gbuffer) gbufferShaderSource(compiled_source, layout, pipeline.program_count != 0);
+    else if (g_d3d11_camera_depth && !cameraDepthShaderSource(compiled_source)) return false;
     return true;
 }
 
@@ -2011,7 +2019,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, specular and viewer (336 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 336u + 76u + 16u + 4u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2863,7 +2871,7 @@ ID3D11BlendState *lookupBlendState(
 
     D3D11_BLEND_DESC desc{};
     desc.AlphaToCoverageEnable = alpha_to_coverage;
-    desc.IndependentBlendEnable = presenter->gbuffer.enabled;
+    desc.IndependentBlendEnable = presenter->gbuffer.enabled || g_d3d11_camera_depth;
     D3D11_RENDER_TARGET_BLEND_DESC &target = desc.RenderTarget[0];
     target.BlendEnable = blend.blend_enable ? TRUE : FALSE;
     target.SrcBlend = hostBlendFactor(blend.src_factor, false);
@@ -2877,6 +2885,18 @@ ID3D11BlendState *lookupBlendState(
         desc.RenderTarget[1] = target;
         desc.RenderTarget[1].BlendEnable = FALSE;
         desc.RenderTarget[1].RenderTargetWriteMask = normal_write ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
+    } else if (g_d3d11_camera_depth) {
+        /* The free camera's view depth and character mask: written where the
+           draw writes depth; a draw blended by its alpha blends them by it. */
+        D3D11_RENDER_TARGET_BLEND_DESC &camera = desc.RenderTarget[1];
+        camera = {};
+        const bool over = blend.blend_enable && blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+            blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA && blend.op == RECOMP_D3D_BLEND_OP_ADD;
+        camera.BlendEnable = over ? TRUE : FALSE;
+        camera.SrcBlend = camera.SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA;
+        camera.DestBlend = camera.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        camera.BlendOp = camera.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        camera.RenderTargetWriteMask = normal_write ? (D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN) : 0;
     }
 
     ID3D11BlendState *state = nullptr;
@@ -3208,7 +3228,9 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     if (!presenter->sun.casting) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 336 + 76 + 16]{};
+    float draw_constants[140 + 192 * 4 + 336 + 76 + 16 + 4]{};
+    // camera_flags: the free camera's character mask.
+    draw_constants[140 + 192 * 4 + 336 + 76 + 16] = draw.character && !draw.target.offscreen ? 1.0f : 0.0f;
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count) {
@@ -3422,11 +3444,14 @@ RecompD3dPresenterError submitDraw(
             ((color >> 8u) & 255u) / 255.0f,
             (color & 255u) / 255.0f,
             ((color >> 24u) & 255u) / 255.0f};
-        const bool normal_write = presenter->gbuffer.enabled && !presenter->sun.casting &&
+        const bool normal_write = presenter->gbuffer.enabled ? !presenter->sun.casting &&
             !draw.target.offscreen && depth_view == presenter->depth_view && !draw.program_count &&
             !layout.pretransformed && layout.normal_offset != RECOMP_D3D_FVF_ABSENT &&
             draw.directional.enabled && draw.depth.depth_test_enable && draw.depth.depth_write_enable &&
-            draw.blend.color_write_mask != 0;
+            draw.blend.color_write_mask != 0
+            // The camera's view depth follows the depth buffer: draws that write depth.
+            : g_d3d11_camera_depth && !presenter->sun.casting && !draw.target.offscreen &&
+              depth_view == presenter->depth_view && draw.depth.depth_write_enable && draw.blend.color_write_mask != 0;
         ID3D11BlendState *blend_state = lookupBlendState(presenter, draw.blend, alpha_to_coverage, normal_write);
         if (blend_state == nullptr) {
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4350,7 +4375,8 @@ RecompD3dPresenterError submitPresent(
         desc.width = presenter->config.width;
         desc.height = presenter->config.height;
         ID3D11ShaderResourceView *back = present.hold ? nullptr : lookupBackBufferTexture(presenter, desc);
-        presenter->camera.present(presenter->device, presenter->context, back, present.blur_index, present.blur_count);
+        presenter->camera.present(presenter->device, presenter->context, back, present.blur_index, present.blur_count,
+            mainWidth(presenter), mainHeight(presenter), presenter->msaa);
     }
     if (presenter->gbuffer.enabled && presenter->gbuffer.debug_view) {
         presenter->gbuffer.show(presenter->context, output);
@@ -4360,6 +4386,13 @@ RecompD3dPresenterError submitPresent(
     copyFrontBuffer(presenter);
     // A motion blur's picture before its last is added up, not shown.
     if (presenter->camera.hide) return RECOMP_D3D_PRESENTER_OK;
+    // A transparent screenshot's frame is saved, not shown.
+    if (presenter->camera.clear_shot) {
+        // Without the view depth this frame, an ordinary screenshot of it.
+        if (!presenter->camera.saveLayers(presenter->device, presenter->context)) saveScreenshot(presenter);
+        presenter->camera.clear_shot = false;
+        return RECOMP_D3D_PRESENTER_OK;
+    }
     presenter->camera.record(presenter->device, presenter->context);
     if (presenter->vrr_target_view != nullptr) {
         auto *context = presenter->context;
@@ -4389,7 +4422,11 @@ RecompD3dPresenterError submitPresent(
         // This presenter draws no big screenshots: one asked for is saved at
         // the frame's own size.
         if (recomp_camera_effects_take_big_shot() != 0u) recomp_screenshot_request_frame();
-        if (recomp_screenshot_take_request()) saveScreenshot(presenter);
+        if (recomp_screenshot_take_request()) {
+            // A transparent one is the next frame, drawn with only the characters.
+            if (presenter->camera.transparentReady()) presenter->camera.clear_shot = true;
+            else saveScreenshot(presenter);
+        }
         // The runtime's overlay text goes on the window's back buffer, after
         // the front buffer the game reads back has been copied.
         RecompOverlayText overlay;
@@ -4622,6 +4659,12 @@ RecompD3dPresenterError d3d11_backend_create(
     }
     created->sun.enabled = sunShadowRequested();
     created->gbuffer.enabled = gbufferRequested();
+    {
+        // The free camera's view depth rides on the draw shaders (d3d_presenter_d3d11_camera.h).
+        const char *free_camera = std::getenv("RECOMP_FREE_CAMERA");
+        g_d3d11_camera_depth = free_camera != nullptr && free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0 &&
+            !created->gbuffer.enabled;
+    }
     if (created->gbuffer.enabled) {
         const char *view = std::getenv("RECOMP_D3D_GBUFFER_VIEW");
         if (view && std::strcmp(view, "normal") == 0) created->gbuffer.debug_view = 1;
@@ -5062,6 +5105,7 @@ RecompD3dPresenterError d3d11_backend_submit(
         const RecompD3dPresenterDrawCommand &draw = command->data.draw;
         // A backdrop's frame draws only the characters.
         if (presenter->camera.leaveOut(draw)) return RECOMP_D3D_PRESENTER_OK;
+        presenter->camera.observe(draw);
 #ifdef RECOMP_RTGI
         RecompD3dVertexLayout layout{};
         if (presenter->rtgi_pending && !draw.target.offscreen &&

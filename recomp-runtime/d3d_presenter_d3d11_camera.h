@@ -1,30 +1,87 @@
 #ifndef DOAXBV_RECOMP_D3D_PRESENTER_D3D11_CAMERA_H
 #define DOAXBV_RECOMP_D3D_PRESENTER_D3D11_CAMERA_H
 
-/* The free camera's effects on the D3D11 presenter (docs/free-camera.md),
-   as far as they go without a view-depth target: the colour effects and
-   bloom (camera_effects_shader.h), studio backdrops, motion blur and video
-   recording. Depth of field, an occluded sun glare and transparent
-   screenshots need the view depth and character mask the SDL GPU presenter
-   draws, so here they are left off. Included by d3d_presenter_d3d11.cpp
-   only; everything fails soft, leaving the frame as the game drew it.
+/* The free camera's effects on the D3D11 presenter (docs/free-camera.md):
+   the effects pass (camera_effects_shader.h) with depth of field, bloom and
+   glare, studio backdrops, transparent screenshots, motion blur and video
+   recording. With the free camera on, the draw shaders also write a second
+   target, as the SDL GPU presenter's do: view depth, 1 where a character
+   draws, and the draw's alpha (cameraDepthShaderSource). Big screenshots are
+   not drawn here: this presenter's targets are sized once. Included by
+   d3d_presenter_d3d11.cpp only; everything fails soft, leaving the frame as
+   the game drew it.
 
    Written without a Windows machine to run it on: it compiles, and its
    shaders compile with glslang's HLSL front end. */
 
 #include "camera_effects.h"
 #include "camera_effects_shader.h"
+#include "d3d_presenter.h"
 #include "screenshot.h"
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <windows.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
+/* The draw shaders write the camera's view-depth target: set once, before
+   any draw shader is built, when the free camera is on and the g-buffer
+   (which takes the same second target) is not. */
+inline bool g_d3d11_camera_depth = false;
+
+/* Adds the second target to a draw shader: the view depth (clip w, from the
+   vertex shader), whether the draw is a character's (camera_flags.x), and
+   the draw's alpha, which blends a hair tip's share into the mask. */
+inline bool cameraDepthShaderSource(std::string &source)
+{
+    const std::string fields = "struct VSOut {";
+    const auto at = source.find(fields);
+    const auto pixel = source.find("float4 ps_main(");
+    if (at == std::string::npos || pixel == std::string::npos) return false;
+    const auto signature_end = source.find(") : SV_TARGET", pixel);
+    const std::string last = "    return shaded;\n}";
+    const auto ending = source.rfind(last);
+    if (signature_end == std::string::npos || ending == std::string::npos || ending < signature_end) return false;
+    source.replace(ending, last.size(),
+        "    camera_depth = float4(input.camera_view_depth, camera_flags.x, 0, saturate(shaded.a));\n"
+        "    return shaded;\n}");
+    const auto body = source.find('{', signature_end);
+    source.insert(body + 1, "\n    camera_depth = 0;");
+    source.insert(signature_end, ", out float4 camera_depth : SV_Target1");
+    for (size_t found = source.find("return output;"); found != std::string::npos && found < source.find("float4 ps_main(");
+         found = source.find("return output;", found + 64)) {
+        source.insert(found, "output.camera_view_depth = output.position.w; ");
+    }
+    source.insert(source.find(fields) + fields.size(), "\n    float camera_view_depth : TEXCOORD9;\n");
+    return true;
+}
+
+// A half float's value (the view depth is kept in half floats).
+inline float halfValue(uint16_t h)
+{
+    const uint32_t sign = uint32_t(h >> 15) << 31, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+    uint32_t bits;
+    if (exponent == 0u) {
+        if (mantissa == 0u) bits = sign;
+        else {
+            float value = std::ldexp(float(mantissa), -24);
+            return sign ? -value : value;
+        }
+    } else if (exponent == 31u) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+    }
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    return value;
+}
 
 struct D3d11CameraEffects {
     bool failed = false, ready = false;
@@ -40,12 +97,31 @@ struct D3d11CameraEffects {
     ID3D11Texture2D *pictures[2] = {};
     ID3D11RenderTargetView *picture_targets[2] = {};
     ID3D11ShaderResourceView *picture_views[2] = {};
+    // The view depth and character mask the draws write (multisampled like
+    // the main target), and its single-sample copy the effects read.
+    ID3D11Texture2D *depth = nullptr, *depth_single = nullptr;
+    ID3D11RenderTargetView *depth_target = nullptr;
+    ID3D11ShaderResourceView *depth_view = nullptr;
+    uint32_t depth_width = 0, depth_height = 0, depth_samples = 0;
+    // The scene cleared the view depth this frame (so it was drawn).
+    bool depth_drawn = false;
+    // Wanted for the next frame: the effects are on.
+    bool depth_wanted = false;
+    // The subject and the sun, seen in this frame's draws.
+    bool sun_seen = false;
+    float sun_dir[3] = {}, sun_camera[16] = {};
+    float subject_offset = 0.0f, subject_depth = 0.0f;
+    // A transparent screenshot's frame: only the characters, over nothing,
+    // saved with its alpha and a depth picture, not shown.
+    bool clear_shot = false;
     // A motion blur's sum, in half floats.
     ID3D11Texture2D *sum = nullptr;
     ID3D11RenderTargetView *sum_target = nullptr;
     ID3D11ShaderResourceView *sum_view = nullptr;
     uint32_t width = 0, height = 0;
     unsigned frame = 0;
+    // The depth the effects read this frame (null: the far depth).
+    ID3D11ShaderResourceView *depth_now = nullptr;
 
     // Taken at each present.
     RecompCameraEffects settings{};
@@ -87,10 +163,21 @@ struct D3d11CameraEffects {
         width = height = 0;
     }
 
+    void releaseDepth()
+    {
+        drop(depth_view);
+        drop(depth_single);
+        drop(depth_target);
+        drop(depth);
+        depth_width = depth_height = depth_samples = 0;
+        depth_drawn = false;
+    }
+
     void release()
     {
         stopVideo();
         releaseTargets();
+        releaseDepth();
         drop(vertex);
         drop(effects);
         drop(copy);
@@ -232,7 +319,7 @@ struct D3d11CameraEffects {
         context->VSSetShader(vertex, nullptr, 0u);
         context->PSSetShader(shader, nullptr, 0u);
         if (constants != nullptr) context->PSSetConstantBuffers(0u, 1u, &constants);
-        ID3D11ShaderResourceView *views[2] = {picture, far_view};
+        ID3D11ShaderResourceView *views[2] = {picture, depth_now != nullptr ? depth_now : far_view};
         context->PSSetShaderResources(0u, 2u, views);
         ID3D11SamplerState *samplers[2] = {linear, point};
         context->PSSetSamplers(0u, 2u, samplers);
@@ -244,9 +331,22 @@ struct D3d11CameraEffects {
        effects, and works out what the window shows from the guest's back
        buffer (`back`, main size). */
     void present(ID3D11Device *device, ID3D11DeviceContext *context, ID3D11ShaderResourceView *guest,
-        uint32_t index, uint32_t count)
+        uint32_t index, uint32_t count, uint32_t main_width, uint32_t main_height, uint32_t samples)
     {
         back = guest;
+        depth_now = nullptr;
+        // The view depth drawn this frame, single-sampled for the effects.
+        const bool depth_ready = depth_drawn && depth_target != nullptr && depth_view != nullptr;
+        if (depth_ready) {
+            if (depth_samples > 1u) context->ResolveSubresource(depth_single, 0u, depth, 0u, DXGI_FORMAT_R16G16_FLOAT);
+            else context->CopyResource(depth_single, depth);
+            depth_now = depth_view;
+        }
+        depth_drawn = false;
+        const float subject = subject_depth;
+        subject_depth = subject_offset = 0.0f;
+        const bool sun = sun_seen;
+        sun_seen = false;
         uint32_t w = 0, h = 0;
         if (guest != nullptr) {
             ID3D11Resource *resource = nullptr;
@@ -263,23 +363,32 @@ struct D3d11CameraEffects {
             drop(resource);
         }
         recomp_camera_effects_take(&settings);
-        recomp_camera_effects_report_subject(0.0f);
+        recomp_camera_effects_report_subject(subject);
+        // The next frame's draws write the view depth while the effects are on.
+        depth_wanted = g_d3d11_camera_depth && (settings.active || clear_shot);
+        if (depth_wanted) wantDepth(device, main_width, main_height, samples);
         backdrop = settings.backdrop;
         std::memcpy(backdrop_rgb, settings.backdrop_rgb, sizeof backdrop_rgb);
         shown = back;
         hide = false;
-        const bool blur = count > 1u;
-        if (back == nullptr || w == 0u || (!settings.active && !blur && !settings.recording)) return;
+        // A transparent screenshot's frame is not blurred.
+        const bool blur = count > 1u && !clear_shot;
+        if (back == nullptr || w == 0u || (!settings.active && !blur && !settings.recording && !clear_shot)) return;
         if (!setUp(device) || !sized(device, w, h)) return;
-        if (settings.active) {
+        if (settings.active || clear_shot) {
             RecompCameraEffects drawn = settings;
-            // No view depth here: no depth of field and no character mask.
-            drawn.depth_of_field = false;
-            drawn.transparent = false;
-            if (drawn.focus == RECOMP_CAMERA_FOCUS_SUBJECT) drawn.focus = 0.0f;
+            // Without the view depth: no depth of field, and no mask.
+            if (!depth_ready) drawn.depth_of_field = false;
+            // The mask is the alpha only in a transparent screenshot's frame.
+            drawn.transparent = clear_shot && depth_ready;
+            if (drawn.focus == RECOMP_CAMERA_FOCUS_SUBJECT) drawn.focus = subject;
             recomp_effects::EffectsFrame frame;
             frame.width = float(w);
             frame.height = float(h);
+            frame.depth_drawn = depth_ready;
+            frame.sun_seen = sun;
+            std::memcpy(frame.sun_dir, sun_dir, sizeof frame.sun_dir);
+            std::memcpy(frame.sun_camera, sun_camera, sizeof frame.sun_camera);
             frame.frame = ++this->frame;
             const recomp_effects::EffectsUniforms u = recomp_effects::effectsUniforms(drawn, frame);
             context->UpdateSubresource(uniforms, 0u, nullptr, &u, 0u, 0u);
@@ -323,16 +432,149 @@ struct D3d11CameraEffects {
        is not a character's. */
     bool leaveOut(const RecompD3dPresenterDrawCommand &draw) const
     {
-        return backdrop && !draw.target.offscreen && !draw.character;
+        return (backdrop || clear_shot) && !draw.target.offscreen && !draw.character;
     }
 
     // A backdrop's frame starts from its colour.
     void clearFor(RecompD3dPresenterClearCommand &clear) const
     {
-        if (!backdrop || clear.target.offscreen || (!clear.clear_color && !clear.clear_depth)) return;
+        if ((!backdrop && !clear_shot) || clear.target.offscreen || (!clear.clear_color && !clear.clear_depth)) return;
         clear.clear_color = true;
+        if (clear_shot) {
+            clear.color = 0u; // nothing, alpha 0
+            return;
+        }
         const auto byte = [](float v) { return uint32_t(v <= 0.0f ? 0.0f : v >= 1.0f ? 255.0f : v * 255.0f + 0.5f); };
         clear.color = 0xFF000000u | (byte(backdrop_rgb[0]) << 16) | (byte(backdrop_rgb[1]) << 8) | byte(backdrop_rgb[2]);
+    }
+
+    // The view-depth target, at the main target's size and samples.
+    void wantDepth(ID3D11Device *device, uint32_t w, uint32_t h, uint32_t samples)
+    {
+        if (depth != nullptr && depth_width == w && depth_height == h && depth_samples == samples) return;
+        releaseDepth();
+        if (w == 0u || h == 0u || samples == 0u) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = w;
+        desc.Height = h;
+        desc.MipLevels = desc.ArraySize = 1u;
+        desc.Format = DXGI_FORMAT_R16G16_FLOAT;
+        desc.SampleDesc.Count = samples;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        bool ok = SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &depth)) &&
+            SUCCEEDED(device->CreateRenderTargetView(depth, nullptr, &depth_target));
+        desc.SampleDesc.Count = 1u;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ok = ok && SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &depth_single)) &&
+            SUCCEEDED(device->CreateShaderResourceView(depth_single, nullptr, &depth_view));
+        if (!ok) {
+            std::fprintf(stderr, "recomp camera effects (d3d11): view depth unavailable; no depth of field\n");
+            releaseDepth();
+            return;
+        }
+        depth_width = w;
+        depth_height = h;
+        depth_samples = samples;
+    }
+
+    // The view-depth target the main target's draws write too, or null.
+    ID3D11RenderTargetView *depthTarget() const
+    {
+        return depth_wanted ? depth_target : nullptr;
+    }
+
+    // The scene's depth clear clears the view depth: far, no character.
+    void clearDepth(ID3D11DeviceContext *context)
+    {
+        if (depthTarget() == nullptr) return;
+        const float far_away[4] = {65504.0f, 0.0f, 0.0f, 0.0f};
+        context->ClearRenderTargetView(depth_target, far_away);
+        depth_drawn = true;
+    }
+
+    // Each draw on the main target: the sun, and the subject among the characters.
+    void observe(const RecompD3dPresenterDrawCommand &draw)
+    {
+        if (!draw.target.offscreen)
+            recomp_effects::observeDraw(draw, sun_seen, sun_dir, sun_camera, subject_offset, subject_depth);
+    }
+
+    // Transparent screenshots can be drawn here: the view depth is.
+    bool transparentReady() const
+    {
+        return settings.transparent && depth_view != nullptr && g_d3d11_camera_depth;
+    }
+
+    /* A transparent screenshot's frame: the picture with its alpha (colour
+       divided by it: drawn over nothing, a partly covered pixel holds only
+       its share) and the depth picture, white near and black far. */
+    bool saveLayers(ID3D11Device *device, ID3D11DeviceContext *context)
+    {
+        if (shown == nullptr || depth_now == nullptr) return false;
+        bool saved = false;
+        ID3D11Resource *resource = nullptr;
+        shown->GetResource(&resource);
+        ID3D11Texture2D *picture = nullptr;
+        if (resource != nullptr) resource->QueryInterface(IID_PPV_ARGS(&picture));
+        drop(resource);
+        if (picture == nullptr) return false;
+        D3D11_TEXTURE2D_DESC desc{};
+        picture->GetDesc(&desc);
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0u;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0u;
+        ID3D11Texture2D *colour = nullptr, *depths = nullptr;
+        D3D11_TEXTURE2D_DESC depth_desc{};
+        depth_single->GetDesc(&depth_desc);
+        depth_desc.Usage = D3D11_USAGE_STAGING;
+        depth_desc.BindFlags = 0u;
+        depth_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && depth_desc.Width == desc.Width &&
+            depth_desc.Height == desc.Height &&
+            SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &colour)) &&
+            SUCCEEDED(device->CreateTexture2D(&depth_desc, nullptr, &depths))) {
+            context->CopyResource(colour, picture);
+            context->CopyResource(depths, depth_single);
+            D3D11_MAPPED_SUBRESOURCE c{}, d{};
+            if (SUCCEEDED(context->Map(colour, 0u, D3D11_MAP_READ, 0u, &c))) {
+                if (SUCCEEDED(context->Map(depths, 0u, D3D11_MAP_READ, 0u, &d))) {
+                    const uint32_t w = desc.Width, h = desc.Height;
+                    std::string straight(size_t(w) * h * 4u, '\0'), grey(size_t(w) * h * 4u, '\0');
+                    const float scale = 1.0f / std::log2(101.0f);
+                    for (uint32_t y = 0; y < h; ++y) {
+                        const auto *from = static_cast<const uint8_t *>(c.pData) + size_t(y) * c.RowPitch;
+                        const auto *depth_row = reinterpret_cast<const uint16_t *>(
+                            static_cast<const uint8_t *>(d.pData) + size_t(y) * d.RowPitch);
+                        for (uint32_t x = 0; x < w; ++x) {
+                            uint8_t *to = reinterpret_cast<uint8_t *>(&straight[(size_t(y) * w + x) * 4u]);
+                            const unsigned a = from[x * 4u + 3u];
+                            for (unsigned k = 0; k < 4u; ++k) to[k] = from[x * 4u + k];
+                            if (a != 0u && a != 255u)
+                                for (unsigned k = 0; k < 3u; ++k) {
+                                    const unsigned v = (from[x * 4u + k] * 255u + a / 2u) / a;
+                                    to[k] = uint8_t(v > 255u ? 255u : v);
+                                }
+                            const float view = std::fmax(0.0f, halfValue(depth_row[x * 2u]));
+                            const float closeness = 1.0f - std::fmin(1.0f, std::log2(1.0f + view) * scale);
+                            uint8_t *g = reinterpret_cast<uint8_t *>(&grey[(size_t(y) * w + x) * 4u]);
+                            g[0] = g[1] = g[2] = uint8_t(closeness * 255.0f + 0.5f);
+                            g[3] = 255u;
+                        }
+                    }
+                    recomp_screenshot_save_layers(reinterpret_cast<const uint8_t *>(straight.data()), w, h, w * 4u,
+                        reinterpret_cast<const uint8_t *>(grey.data()));
+                    saved = true;
+                    context->Unmap(depths, 0u);
+                }
+                context->Unmap(colour, 0u);
+            }
+        }
+        drop(colour);
+        drop(depths);
+        drop(picture);
+        return saved;
     }
 
     // ---- Video: every frame shown while the path plays with Record on.

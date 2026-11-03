@@ -578,23 +578,26 @@ with the scene; H hides it.
 
 ### On Windows (D3D11)
 
-The D3D11 presenter draws what needs no view depth
-(`d3d_presenter_d3d11_camera.h`): the same effects shader, made HLSL from
-the shared source (`camera_effects_shader.h`), gives the filters, exposure,
-contrast, saturation, vignette, grain, letterbox, bloom and an unoccluded sun
-glare; backdrops leave out every draw that is not a character's and clear to
-their colour; motion blur adds a frame's pictures into a half-float target
-and presents only the last; and Record video sends each frame shown to
-ffmpeg (`RECOMP_FFMPEG`, or `ffmpeg` on the PATH) through a pipe, reading it
-back as it goes. Depth of field, the glare hidden behind things and
-transparent screenshots need the view depth and character mask that the
-draws do not write on D3D11 yet, so they are left off (a transparent
-screenshot is an ordinary one), and big screenshots are saved at the frame's
-own size. The game-side features (time of day, the key, rim and fill
-lights, eye contact, faces, moving girls, slow motion, paths, tracking)
-are the same on every presenter. This was written and compiled without a
-Windows machine to run it on; anything that fails to set up leaves the
-frame as the game drew it.
+The D3D11 presenter draws the same effects (`d3d_presenter_d3d11_camera.h`),
+from the same shader source made HLSL (`camera_effects_shader.h`). With
+`RECOMP_FREE_CAMERA` set (and the debug g-buffer off), every draw shader also
+writes a second target as the SDL GPU presenter's do
+(`cameraDepthShaderSource`): the view depth (clip w, through `TEXCOORD9`), 1
+where a character draws (`camera_flags.x`, set from the draw's character
+flag) and the draw's alpha. It is bound beside the main target while the
+effects are on, cleared to far with the scene's depth, written where a draw
+writes depth and blended by alpha where the draw blends by alpha; at present
+it is resolved and the effects read it. So depth of field (on her: the
+subject comes from the characters' draws, `recomp_effects::observeDraw`, shared
+with the SDL GPU presenter), the glare hidden behind things, backdrops,
+transparent screenshots (the next frame, with only the characters over
+nothing, saved with its alpha and depth picture, not shown), motion blur and
+Record video (ffmpeg from `RECOMP_FFMPEG` or the PATH) work there too. Big
+screenshots are saved at the frame's own size: this presenter sizes its
+targets once. This was written and compiled (llvm-mingw) without a Windows
+machine to run it on, and its shaders were checked only with glslang's HLSL
+front end; anything that fails to set up leaves the frame as the game drew
+it.
 
 ## Debugging
 

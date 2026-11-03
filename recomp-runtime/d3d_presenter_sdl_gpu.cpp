@@ -3131,45 +3131,11 @@ bool effectsCreate(RecompD3dPresenter *presenter)
     return true;
 }
 
-/* Each character piece's sampled vertices give its middle on screen and its
-   view depth; the one nearest the picture's middle is the subject. */
+/* The subject (for "focus on her") and the sun (for glare), from each draw. */
 void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     auto &e = presenter->effects;
-    if (!e.sun_seen && draw.sun[3] == 1.0f && draw.directional.enabled && !draw.blend_weight_count) {
-        e.sun_seen = true;
-        std::memcpy(e.sun_dir, draw.sun, sizeof e.sun_dir);
-        std::memcpy(e.sun_camera, draw.view_projection, sizeof e.sun_camera);
-    }
-    if (!draw.character || draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
-        draw.vertex_stride < (3u + draw.blend_weight_count) * sizeof(float)) return;
-    // Parts share one vertex buffer, so sample the vertices this draw's indices use.
-    const uint32_t samples = std::min(draw.index_count, 24u);
-    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
-    float clip[4] = {};
-    for (uint32_t k = 0; k < samples; ++k) {
-        const uint32_t v = indices[k * draw.index_count / samples];
-        if (v >= draw.vertex_count) return;
-        float vertex[6]{};
-        std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride,
-            (3u + draw.blend_weight_count) * sizeof(float));
-        // The same per-bone transforms the vertex shader blends (wvp[0..3]).
-        float remainder = 1.0f;
-        for (uint32_t b = 0; b <= draw.blend_weight_count; ++b) {
-            const float weight = b == draw.blend_weight_count ? remainder : vertex[3 + b];
-            remainder -= weight;
-            const float *m = b == 0 ? draw.transform : draw.blend_transforms[b - 1];
-            for (unsigned c = 0; c < 4; ++c)
-                clip[c] += weight * (vertex[0] * m[c] + vertex[1] * m[4 + c] + vertex[2] * m[8 + c] + m[12 + c]);
-        }
-    }
-    if (!(clip[3] > 0.05f * samples) || !std::isfinite(clip[3])) return;
-    const float x = clip[0] / clip[3], y = clip[1] / clip[3];
-    const float offset = std::sqrt(x * x + y * y);
-    if (!std::isfinite(offset) || std::fabs(x) > 1.0f || std::fabs(y) > 1.0f) return;
-    if (e.subject_depth > 0.0f && offset >= e.subject_offset) return;
-    e.subject_offset = offset;
-    e.subject_depth = clip[3] / samples;
+    recomp_effects::observeDraw(draw, e.sun_seen, e.sun_dir, e.sun_camera, e.subject_offset, e.subject_depth);
 }
 
 float p_big_ratio(const RecompD3dPresenter *presenter)

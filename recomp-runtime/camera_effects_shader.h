@@ -7,6 +7,10 @@
    (HLSL) by swapping a few words. C++, header only. */
 
 #include "camera_effects.h"
+#include "d3d_presenter.h"
+
+#include <cmath>
+#include <cstring>
 
 #include <algorithm>
 #include <string>
@@ -254,6 +258,49 @@ inline EffectsUniforms effectsUniforms(const RecompCameraEffects &settings, cons
         }
     }
     return u;
+}
+
+/* What one draw tells the effects: the sun's direction and the camera it
+   was seen through (the first lit scenery draw with the game's shadow
+   direction), and the subject: of the characters' pieces, the one whose
+   middle is nearest the middle of the picture gives its view depth. Each
+   piece's middle is the average of up to 24 of the vertices its indices use,
+   through the same per-bone transforms the vertex shader blends. */
+inline void observeDraw(const RecompD3dPresenterDrawCommand &draw, bool &sun_seen, float sun_dir[3],
+    float sun_camera[16], float &subject_offset, float &subject_depth)
+{
+    if (!sun_seen && draw.sun[3] == 1.0f && draw.directional.enabled && !draw.blend_weight_count) {
+        sun_seen = true;
+        std::memcpy(sun_dir, draw.sun, 3 * sizeof(float));
+        std::memcpy(sun_camera, draw.view_projection, 16 * sizeof(float));
+    }
+    if (!draw.character || draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
+        draw.vertex_stride < (3u + draw.blend_weight_count) * sizeof(float)) return;
+    const uint32_t samples = std::min(draw.index_count, 24u);
+    const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
+    float clip[4] = {};
+    for (uint32_t k = 0; k < samples; ++k) {
+        const uint32_t v = indices[k * draw.index_count / samples];
+        if (v >= draw.vertex_count) return;
+        float vertex[6]{};
+        std::memcpy(vertex, static_cast<const uint8_t *>(draw.vertex_bytes) + size_t(v) * draw.vertex_stride,
+            (3u + draw.blend_weight_count) * sizeof(float));
+        float remainder = 1.0f;
+        for (uint32_t b = 0; b <= draw.blend_weight_count; ++b) {
+            const float weight = b == draw.blend_weight_count ? remainder : vertex[3 + b];
+            remainder -= weight;
+            const float *m = b == 0 ? draw.transform : draw.blend_transforms[b - 1];
+            for (unsigned c = 0; c < 4; ++c)
+                clip[c] += weight * (vertex[0] * m[c] + vertex[1] * m[4 + c] + vertex[2] * m[8 + c] + m[12 + c]);
+        }
+    }
+    if (!(clip[3] > 0.05f * samples) || !std::isfinite(clip[3])) return;
+    const float x = clip[0] / clip[3], y = clip[1] / clip[3];
+    const float offset = std::sqrt(x * x + y * y);
+    if (!std::isfinite(offset) || std::fabs(x) > 1.0f || std::fabs(y) > 1.0f) return;
+    if (subject_depth > 0.0f && offset >= subject_offset) return;
+    subject_offset = offset;
+    subject_depth = clip[3] / samples;
 }
 
 } // namespace recomp_effects
