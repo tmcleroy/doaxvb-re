@@ -50,6 +50,14 @@ static uint32_t stack_argument(uint32_t entry_esp, uint32_t index)
 }
 
 static uint32_t present_held;
+/* The next Swap's place in a motion blur's pictures (set_blur). */
+static uint32_t blur_index, blur_count;
+
+void recomp_d3d_frame_adapter_set_blur(uint32_t index, uint32_t count)
+{
+    blur_index = index;
+    blur_count = count;
+}
 
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold)
 {
@@ -401,7 +409,12 @@ void recomp_d3d_swap_adapter(void)
     }
     /* Animation and gameplay fibers each advance once per Swap. Host VSync
        follows the monitor's refresh rate, not the guest's 60 Hz cadence. */
-    recomp_d3d_wait_vblank();
+    /* A motion blur's pictures before its last are averaged, not shown:
+       only the last waits for the display. */
+    if (blur_count < 2u || blur_index + 1u >= blur_count) recomp_d3d_wait_vblank();
+    result.command.data.present.blur_index = blur_index;
+    result.command.data.present.blur_count = blur_count;
+    blur_index = blur_count = 0u;
     /* A held frame is still presented, so its draws run now while the
        textures they borrow from guest memory are this frame's, and the
        presenter keeps handling window events. */

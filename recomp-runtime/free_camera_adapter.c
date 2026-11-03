@@ -190,6 +190,8 @@ static struct {
     RecompCameraPath path;
     bool playing;
     unsigned play_frames;
+    /* Pictures drawn for each frame shown: more than one with motion blur. */
+    unsigned blur;
     /* Slow motion froze the scene, and frames shown since its last step. */
     bool slowed;
     /* P in slow motion holds it where it is; P again goes on slowly. */
@@ -881,11 +883,13 @@ static void build_camera(void)
             double seconds = now - state.stepped_seconds;
             if (!(seconds > 0.0) || seconds > 0.1) seconds = FRAME_SECONDS;
             if (state.playing) {
-                /* The path plays at 60 frames a second of its length. */
-                const float t = (float)state.play_frames / (60.0f * (float)state.settings.path_seconds);
+                /* The path plays at 60 frames a second of its length, each
+                   frame `blur` pictures with motion blur. */
+                const unsigned steps = 60u * state.settings.path_seconds * (state.blur ? state.blur : 1u);
+                const float t = (float)state.play_frames / (float)steps;
                 recomp_camera_path_sample(&state.path, t, &state.camera);
                 /* A frame run unseen is not one of them. */
-                if (frame != state.unseen_frame && ++state.play_frames > 60u * state.settings.path_seconds)
+                if (frame != state.unseen_frame && ++state.play_frames > steps)
                     state.playing = false;
             } else if (state.settings.orbit != RECOMP_CAMERA_ORBIT_OFF) {
                 /* Round the point in focus: the character in the middle of
@@ -1073,7 +1077,7 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
                 snprintf(value, sizeof value, "Camera path: %u views (right adds this view, left removes)", state.path.count);
             else if (row == RECOMP_CAMERA_SETTING_PATH_PLAY && state.playing)
                 snprintf(value, sizeof value, "Playing %u%%%s (left stops)",
-                    100u * state.play_frames / (60u * state.settings.path_seconds),
+                    100u * state.play_frames / (60u * state.settings.path_seconds * (state.blur ? state.blur : 1u)),
                     state.settings.record ? ", recording" : "");
             recomp_overlay_add_line(text, "%s %s", row == state.setting_row ? ">" : " ", value);
         }
@@ -1149,8 +1153,16 @@ static void scene_runs(void)
    is shown a step late. A girl hidden or shown since the sample is left. */
 static void step_slow_motion(void)
 {
-    const unsigned every = state.active && state.settings_ready ? 1u << state.settings.slow : 1u;
     const bool smooth = recomp_game_requested_hz() == 0u;
+    /* Motion blur shows the average of `blur` pictures a frame, each part of
+       the way on: slow motion's blend, `blur` times finer. */
+    unsigned blur = state.active && state.settings_ready && smooth && state.settings.motion_blur != 0u ?
+        2u << state.settings.motion_blur : 1u;
+#ifdef _WIN32
+    blur = 1u; /* the D3D11 presenter shows each picture; only SDL GPU averages them */
+#endif
+    const unsigned every = (state.active && state.settings_ready ? 1u << state.settings.slow : 1u) * blur;
+    state.blur = blur;
     if (every > 1u) {
         /* Anything else that let the scene run leaves slow motion on: slow
            it again. */
@@ -1187,6 +1199,7 @@ static void step_slow_motion(void)
         ++state.slow_frames;
         if (smooth) recomp_slow_motion_apply((float)state.slow_frames / (float)every,
             state.settings_hidden ^ state.sampled_hidden);
+        if (blur > 1u) recomp_d3d_frame_adapter_set_blur((state.slow_frames - 1u) % blur, blur);
     } else if (state.slowed) {
         recomp_scene_freeze_set(false);
         state.slowed = false;

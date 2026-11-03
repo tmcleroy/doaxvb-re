@@ -353,6 +353,7 @@ the sticks, WASD and the right mouse button still fly.
 | Play path | Right plays the path from its first view, left stops |
 | Record video | On: playing the path records it to an MP4 |
 | Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
+| Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame (Metal and Vulkan) |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
 
@@ -419,6 +420,17 @@ quits (no H.264 encoder, a full disk) the video stops there, the log says so,
 and recording waits until it is turned on again. A screenshot taken while
 recording is left out of the video, which goes on in the same file. The game
 steps once a frame, so a slow encoder slows the scene but not the video.
+
+Motion blur draws each frame as the average of 4, 8 or 16 pictures, each
+part of the way from one game frame to the next: slow motion's blend, made
+that many times finer (`step_slow_motion`), at normal speed or slowed. A
+Swap marked as picture i of n (`recomp_d3d_frame_adapter_set_blur`) skips the
+display wait unless it is the last; the SDL GPU presenter adds each picture,
+effects included, into a half-float target weighted 1/n and shows, saves or
+records the sum on the last (`blurAdd`). A camera path takes n pictures a
+frame, so it keeps its length. The D3D11 presenter does not average, so
+Windows builds leave it off. A big or transparent screenshot's frame is not
+blurred.
 
 Slow motion freezes the scene and steps it one frame in every 2, 4 or 8
 shown. P holds it where it is, and P again lets it go on slowly. At 60 Hz (no `RECOMP_GAME_HZ`) it is smooth: each frame shown is part

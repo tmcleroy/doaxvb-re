@@ -38,6 +38,10 @@ enum {
     RECOMP_PRESENT_HOLD_VIEWER = 2u,
 };
 void recomp_d3d_frame_adapter_hold_present(uint32_t reason, bool hold);
+/* Motion blur: the next Swap is picture `index` of `count`, which the
+   presenter averages into one frame; all but the last skip the display
+   wait. Applies to that Swap only. */
+void recomp_d3d_frame_adapter_set_blur(uint32_t index, uint32_t count);
 /* Called at the first Clear of each frame, from the guest's drawing, where
    the hook may call the game's own code (leaving the registers as they
    were). */

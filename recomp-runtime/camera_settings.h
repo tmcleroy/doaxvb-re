@@ -45,6 +45,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_PATH_PLAY,
     RECOMP_CAMERA_SETTING_RECORD,
     RECOMP_CAMERA_SETTING_SPEED,
+    RECOMP_CAMERA_SETTING_MOTION_BLUR,
     RECOMP_CAMERA_SETTING_POSE,
     RECOMP_CAMERA_SETTING_EYE_CONTACT,
     RECOMP_CAMERA_SETTING_COUNT
@@ -106,6 +107,7 @@ typedef struct RecompCameraSettings {
     unsigned path_seconds; /* how long the camera path takes to play, 2 to 60 */
     bool record;          /* playing the path records a video */
     unsigned slow;        /* the scene runs one frame in 1, 2, 4 or 8 (index 0 to 3) */
+    unsigned motion_blur; /* 0 off, else each frame averages 2 << n pictures (4, 8, 16) */
     unsigned eye_contact; /* 0 off, 1 head, 2 head and eyes */
 } RecompCameraSettings;
 

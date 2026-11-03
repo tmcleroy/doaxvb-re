@@ -142,6 +142,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_SPEED:
         settings->slow = clamp_index((int)settings->slow + steps, 4u);
         break;
+    case RECOMP_CAMERA_SETTING_MOTION_BLUR:
+        settings->motion_blur = clamp_index((int)settings->motion_blur + steps, 4u);
+        break;
     case RECOMP_CAMERA_SETTING_EYE_CONTACT:
         settings->eye_contact = (unsigned)wrap((int)settings->eye_contact + steps, 3);
         break;
@@ -245,6 +248,10 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_SPEED:
         if (settings->slow == 0u) snprintf(text, size, "Scene speed: normal");
         else snprintf(text, size, "Scene speed: 1/%u (slow motion)", 1u << settings->slow);
+        break;
+    case RECOMP_CAMERA_SETTING_MOTION_BLUR:
+        if (settings->motion_blur == 0u) snprintf(text, size, "Motion blur: Off");
+        else snprintf(text, size, "Motion blur: %u pictures a frame", 2u << settings->motion_blur);
         break;
     case RECOMP_CAMERA_SETTING_EYE_CONTACT: {
         static const char *const names[3] = {"Off", "Head", "Head and eyes"};

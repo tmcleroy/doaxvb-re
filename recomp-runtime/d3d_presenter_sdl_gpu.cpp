@@ -629,6 +629,16 @@ struct RecompD3dPresenter {
         uint32_t msaa_count = 1u;
     } big_shot;
 
+    /* Motion blur: a frame's pictures added up, weighted, in `accum` (half
+       floats), then copied to `output` to be shown on the last. */
+    struct {
+        SDL_GPUTexture *accum = nullptr, *output = nullptr;
+        uint32_t width = 0, height = 0;
+        SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
+        SDL_GPUGraphicsPipeline *pipeline = nullptr;
+        bool failed = false, started = false;
+    } blur;
+
     /* A transparent screenshot's frame draws only the characters, over a clear
        picture, so blended edges hold no scene: it is saved, not shown. */
     bool clear_shot = false, clear_shot_next = false;
@@ -3259,11 +3269,8 @@ bool effectsCreate(RecompD3dPresenter *presenter)
     return true;
 }
 
-/* A character piece: a skinned joint, or a lit rigid piece no larger than a
-   limb (sampled through its indices, in world space). */
-/* Characters are drawn as skinned joints and lit rigid pieces, one per limb.
-   Each candidate's sampled vertices give its middle on screen and its view
-   depth; the one nearest the picture's middle is the subject. */
+/* Each character piece's sampled vertices give its middle on screen and its
+   view depth; the one nearest the picture's middle is the subject. */
 void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     auto &e = presenter->effects;
@@ -3272,14 +3279,12 @@ void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterD
         std::memcpy(e.sun_dir, draw.sun, sizeof e.sun_dir);
         std::memcpy(e.sun_camera, draw.view_projection, sizeof e.sun_camera);
     }
-    const bool skinned = draw.blend_weight_count != 0u;
-    if (draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
-        (!skinned && (!draw.directional.enabled || !draw.depth.depth_write_enable)) ||
+    if (!draw.character || draw.blend_weight_count > 3 || !draw.index_count || !draw.has_transform ||
         draw.vertex_stride < (3u + draw.blend_weight_count) * sizeof(float)) return;
     // Parts share one vertex buffer, so sample the vertices this draw's indices use.
     const uint32_t samples = std::min(draw.index_count, 24u);
     const auto *indices = static_cast<const uint16_t *>(draw.index_bytes);
-    float clip[4] = {}, low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    float clip[4] = {};
     for (uint32_t k = 0; k < samples; ++k) {
         const uint32_t v = indices[k * draw.index_count / samples];
         if (v >= draw.vertex_count) return;
@@ -3295,17 +3300,7 @@ void effectsObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterD
             for (unsigned c = 0; c < 4; ++c)
                 clip[c] += weight * (vertex[0] * m[c] + vertex[1] * m[4 + c] + vertex[2] * m[8 + c] + m[12 + c]);
         }
-        if (!skinned) {
-            const float *m = draw.world[0];
-            for (unsigned a = 0; a < 3; ++a) {
-                const float p = vertex[0] * m[a] + vertex[1] * m[4 + a] + vertex[2] * m[8 + a] + m[12 + a];
-                low[a] = std::min(low[a], p);
-                high[a] = std::max(high[a], p);
-            }
-        }
     }
-    // A rigid piece as small as a limb: posts, rocks and the court are larger.
-    if (!skinned && std::max({high[0] - low[0], high[1] - low[1], high[2] - low[2]}) > 1.2f) return;
     if (!(clip[3] > 0.05f * samples) || !std::isfinite(clip[3])) return;
     const float x = clip[0] / clip[3], y = clip[1] / clip[3];
     const float offset = std::sqrt(x * x + y * y);
@@ -3599,6 +3594,171 @@ bool resizeMain(RecompD3dPresenter *p, float scale, SDL_GPUSampleCount samples)
 /* Once a present: a requested big screenshot makes the next frame `n` times
    larger, single sampled (its own size smooths its edges), at most 16384
    pixels a side and 40 million in all; the frame after it goes back. */
+
+// ---- Motion blur: the pictures of one frame averaged (camera_effects.h).
+
+constexpr char kMslBlur[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct VOut { float4 position [[position]]; };
+vertex VOut vs_main(uint id [[vertex_id]]) {
+    VOut out;
+    float2 p = float2((id << 1) & 2, id & 2);
+    out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    return out;
+}
+fragment float4 ps_main(VOut in [[stage_in]], constant float4 &weight [[buffer(0)]],
+                        texture2d<float> picture [[texture(0)]], sampler smp [[sampler(0)]]) {
+    return picture.read(uint2(in.position.xy)) * weight.x;
+}
+)";
+
+constexpr char kGlslBlurFragment[] = R"(#version 450
+layout(set = 3, binding = 0, std140) uniform Weight { vec4 weight; } u;
+layout(set = 2, binding = 0) uniform sampler2D picture;
+layout(location = 0) out vec4 out_color;
+void main() { out_color = texelFetch(picture, ivec2(gl_FragCoord.xy), 0) * u.weight.x; }
+)";
+
+void blurReleaseTargets(RecompD3dPresenter *p)
+{
+    auto &b = p->blur;
+    if (b.accum) SDL_ReleaseGPUTexture(p->device, b.accum);
+    if (b.output) SDL_ReleaseGPUTexture(p->device, b.output);
+    b.accum = b.output = nullptr;
+    b.width = b.height = 0;
+    b.started = false;
+}
+
+void blurRelease(RecompD3dPresenter *p)
+{
+    auto &b = p->blur;
+    blurReleaseTargets(p);
+    if (b.pipeline) SDL_ReleaseGPUGraphicsPipeline(p->device, b.pipeline);
+    if (b.vertex) SDL_ReleaseGPUShader(p->device, b.vertex);
+    if (b.fragment) SDL_ReleaseGPUShader(p->device, b.fragment);
+    b = {};
+}
+
+// The pipeline once, and targets at the main size.
+bool blurReady(RecompD3dPresenter *p)
+{
+    auto &b = p->blur;
+    if (b.failed) return false;
+    if (!b.pipeline) {
+        const bool msl = !p->use_spirv;
+        SDL_GPUShaderCreateInfo shader{};
+        std::vector<uint32_t> vs_spirv, fs_spirv;
+        if (msl) {
+            shader.code = reinterpret_cast<const Uint8 *>(kMslBlur);
+            shader.code_size = sizeof kMslBlur - 1u;
+            shader.entrypoint = "vs_main";
+            shader.format = SDL_GPU_SHADERFORMAT_MSL;
+        } else {
+            vs_spirv = compileGlslToSpirv(kGlslEffectsVertex, SDL_GPU_SHADERSTAGE_VERTEX);
+            shader.code = reinterpret_cast<const Uint8 *>(vs_spirv.data());
+            shader.code_size = vs_spirv.size() * sizeof(uint32_t);
+            shader.entrypoint = "main";
+            shader.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        }
+        shader.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        if (shader.code_size) b.vertex = SDL_CreateGPUShader(p->device, &shader);
+        if (msl) {
+            shader.entrypoint = "ps_main";
+        } else {
+            fs_spirv = compileGlslToSpirv(kGlslBlurFragment, SDL_GPU_SHADERSTAGE_FRAGMENT);
+            shader.code = reinterpret_cast<const Uint8 *>(fs_spirv.data());
+            shader.code_size = fs_spirv.size() * sizeof(uint32_t);
+        }
+        shader.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        shader.num_samplers = 1;
+        shader.num_uniform_buffers = 1;
+        if (shader.code_size) b.fragment = SDL_CreateGPUShader(p->device, &shader);
+        if (b.vertex && b.fragment) {
+            SDL_GPUGraphicsPipelineCreateInfo pinfo{};
+            pinfo.vertex_shader = b.vertex;
+            pinfo.fragment_shader = b.fragment;
+            pinfo.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            pinfo.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+            pinfo.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            SDL_GPUColorTargetDescription target{};
+            target.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+            target.blend_state.enable_blend = true;
+            target.blend_state.src_color_blendfactor = target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            target.blend_state.dst_color_blendfactor = target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+            target.blend_state.color_blend_op = target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+            pinfo.target_info.color_target_descriptions = &target;
+            pinfo.target_info.num_color_targets = 1;
+            b.pipeline = SDL_CreateGPUGraphicsPipeline(p->device, &pinfo);
+        }
+        if (!b.pipeline) {
+            std::fprintf(stderr, "recomp motion blur: setup failed (%s); frames are shown unblurred\n", SDL_GetError());
+            b.failed = true;
+            return false;
+        }
+    }
+    const uint32_t width = mainWidth(p), height = mainHeight(p);
+    if (b.accum && b.width == width && b.height == height) return true;
+    blurReleaseTargets(p);
+    SDL_GPUTextureCreateInfo info{};
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    b.accum = SDL_CreateGPUTexture(p->device, &info);
+    info.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    b.output = SDL_CreateGPUTexture(p->device, &info);
+    b.width = width;
+    b.height = height;
+    if (!b.accum || !b.output) {
+        blurReleaseTargets(p);
+        return false;
+    }
+    return true;
+}
+
+/* Adds picture `index` of `count` to the average; on the last, returns the
+   average to show, else nullptr (the picture is not shown). */
+SDL_GPUTexture *blurAdd(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *picture,
+    uint32_t index, uint32_t count)
+{
+    auto &b = p->blur;
+    if (!blurReady(p)) return picture;
+    // A frame's pictures start from nothing; one whose first was missed is shown as it is.
+    if (index == 0u) b.started = true;
+    if (!b.started) return picture;
+    SDL_GPUColorTargetInfo target{};
+    target.texture = b.accum;
+    target.load_op = index == 0u ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+    target.clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+    target.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &target, 1, nullptr);
+    if (!pass) return picture;
+    SDL_BindGPUGraphicsPipeline(pass, b.pipeline);
+    SDL_GPUTextureSamplerBinding sampler{picture, p->point_sampler};
+    SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
+    const float weight[4] = {1.0f / float(count), 0.0f, 0.0f, 0.0f};
+    SDL_PushGPUFragmentUniformData(cmdbuf, 0, weight, sizeof weight);
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+    if (index + 1u < count) return nullptr;
+    b.started = false;
+    SDL_GPUBlitInfo blit{};
+    blit.source.texture = b.accum;
+    blit.source.w = b.width;
+    blit.source.h = b.height;
+    blit.destination.texture = b.output;
+    blit.destination.w = b.width;
+    blit.destination.h = b.height;
+    blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    blit.filter = SDL_GPU_FILTER_NEAREST;
+    SDL_BlitGPUTexture(cmdbuf, &blit);
+    return b.output;
+}
+
 // Transparent screenshots are asked for (the camera effects' setting).
 bool transparentShots(const RecompD3dPresenter *p)
 {
@@ -4208,6 +4368,17 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         // The window and screenshots show the camera effects; the front buffer copy does not.
         SDL_GPUTexture *shown = present.hold ? presenter->backbuffer_resolve : effectsRender(presenter, cmdbuf);
+        // Motion blur: a picture before the frame's last is added up, not shown;
+        // a big or transparent screenshot's frame is shown as it is.
+        if (!present.hold && present.blur_count > 1u && presenter->effects.enabled &&
+            !presenter->big_shot.active && !presenter->clear_shot) {
+            shown = blurAdd(presenter, cmdbuf, shown, present.blur_index, present.blur_count);
+            if (shown == nullptr) {
+                SDL_SubmitGPUCommandBuffer(cmdbuf);
+                presenter->current_command_buffer = nullptr;
+                return RECOMP_D3D_PRESENTER_OK;
+            }
+        }
         SDL_GPUTexture *swapchain_tex = nullptr;
         Uint32 swap_w = 0, swap_h = 0;
         // A held frame updates the front buffer copy, but the window keeps
@@ -4699,6 +4870,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     recordingStop(p);
     sunRelease(p);
     effectsRelease(p);
+    blurRelease(p);
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {

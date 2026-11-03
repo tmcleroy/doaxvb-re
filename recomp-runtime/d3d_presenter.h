@@ -64,6 +64,9 @@ typedef struct RecompD3dPresenterPresentCommand {
     /* The frame's work still runs, but the window keeps the last picture
        presented (recomp_d3d_frame_adapter_hold_present). */
     bool hold;
+    /* Motion blur: picture blur_index of blur_count, averaged into one frame
+       shown on the last; blur_count 0 or 1 is a frame of its own. */
+    uint32_t blur_index, blur_count;
 } RecompD3dPresenterPresentCommand;
 
 /* Directional and point lighting for the material-source path. */
