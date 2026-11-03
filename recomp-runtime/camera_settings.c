@@ -32,10 +32,15 @@ enum {
     MOUTH_COUNT = sizeof MOUTHS / sizeof MOUTHS[0],
 };
 
+void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, int *eyes, int *mouth)
+{
+    *eyes = EYES[eyes_choice % EYES_COUNT].shape;
+    *mouth = MOUTHS[mouth_choice % MOUTH_COUNT].shape;
+}
+
 void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth)
 {
-    *eyes = EYES[settings->eyes % EYES_COUNT].shape;
-    *mouth = MOUTHS[settings->mouth % MOUTH_COUNT].shape;
+    recomp_camera_settings_face_shapes(settings->eyes, settings->mouth, eyes, mouth);
 }
 
 /* Rim light colours (lighting her from behind, so her edges shine). */
@@ -86,10 +91,11 @@ static const RecompCameraSettingRow CAMERA_ROWS[] = {
     RECOMP_CAMERA_SETTING_GRAIN,
 }, LIGHT_ROWS[] = {
     RECOMP_CAMERA_SETTING_TIME_OF_DAY, RECOMP_CAMERA_SETTING_LIGHT_ANGLE, RECOMP_CAMERA_SETTING_LIGHT_STRENGTH,
-    RECOMP_CAMERA_SETTING_RIM_LIGHT, RECOMP_CAMERA_SETTING_FILL_LIGHT,
+    RECOMP_CAMERA_SETTING_RIM_LIGHT, RECOMP_CAMERA_SETTING_FILL_LIGHT, RECOMP_CAMERA_SETTING_OCCLUSION,
 }, GIRLS_ROWS[] = {
     RECOMP_CAMERA_SETTING_POSE, RECOMP_CAMERA_SETTING_MOVE_HER, RECOMP_CAMERA_SETTING_EYE_CONTACT,
-    RECOMP_CAMERA_SETTING_EYES, RECOMP_CAMERA_SETTING_MOUTH, RECOMP_CAMERA_SETTING_HIDE_OTHERS,
+    RECOMP_CAMERA_SETTING_FACES, RECOMP_CAMERA_SETTING_EYES, RECOMP_CAMERA_SETTING_MOUTH,
+    RECOMP_CAMERA_SETTING_HIDE_OTHERS,
     RECOMP_CAMERA_SETTING_HIDE_BALL,
 }, SHOTS_ROWS[] = {
     RECOMP_CAMERA_SETTING_SHOT_SIZE, RECOMP_CAMERA_SETTING_BACKGROUND, RECOMP_CAMERA_SETTING_BACKDROP,
@@ -247,6 +253,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
     case RECOMP_CAMERA_SETTING_SPEED:
         settings->slow = clamp_index((int)settings->slow + steps, 4u);
         break;
+    case RECOMP_CAMERA_SETTING_FACES:
+        if (steps % 2 != 0) settings->face_each = !settings->face_each;
+        break;
     case RECOMP_CAMERA_SETTING_EYES:
         settings->eyes = (unsigned)wrap((int)settings->eyes + steps, EYES_COUNT);
         break;
@@ -261,6 +270,9 @@ void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraS
         break;
     case RECOMP_CAMERA_SETTING_FILL_LIGHT:
         settings->fill_light = clamp_index((int)settings->fill_light + steps, 11u);
+        break;
+    case RECOMP_CAMERA_SETTING_OCCLUSION:
+        settings->occlusion = clamp_index((int)settings->occlusion + steps, 5u);
         break;
     case RECOMP_CAMERA_SETTING_MOTION_BLUR:
         settings->motion_blur = clamp_index((int)settings->motion_blur + steps, 4u);
@@ -281,6 +293,9 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     case RECOMP_CAMERA_SETTING_RESET:
         snprintf(text, size, "Reset all camera options: press right");
         break;
+    case RECOMP_CAMERA_SETTING_FACES:
+        snprintf(text, size, "Faces: %s", settings->face_each ? "Each girl her own (Eyes, Mouth: the chosen girl)" : "The same for every girl");
+        break;
     case RECOMP_CAMERA_SETTING_EYES:
         snprintf(text, size, "Eyes: %s", EYES[settings->eyes % EYES_COUNT].name);
         break;
@@ -292,6 +307,10 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         break;
     case RECOMP_CAMERA_SETTING_RIM_LIGHT:
         snprintf(text, size, "Rim light: %s", RIMS[settings->rim_light % RIM_COUNT].name);
+        break;
+    case RECOMP_CAMERA_SETTING_OCCLUSION:
+        if (settings->occlusion == 0u) snprintf(text, size, "Ambient occlusion: Off");
+        else snprintf(text, size, "Ambient occlusion: %u%%", settings->occlusion * 25u);
         break;
     case RECOMP_CAMERA_SETTING_FILL_LIGHT:
         if (settings->fill_light == 0u) snprintf(text, size, "Fill light: Off");
@@ -448,12 +467,13 @@ void recomp_camera_settings_effects(const RecompCameraSettings *settings, float 
     effects->contrast = (float)settings->contrast / 100.0f;
     effects->saturation = (float)settings->saturation / 10.0f;
     effects->bloom = (float)settings->bloom / 10.0f;
+    effects->occlusion = (float)settings->occlusion / 4.0f;
     effects->transparent = settings->transparent;
     effects->backdrop = settings->backdrop % BACKDROP_COUNT != 0u;
     memcpy(effects->backdrop_rgb, BACKDROPS[settings->backdrop % BACKDROP_COUNT].rgb, sizeof effects->backdrop_rgb);
     effects->active = effects->depth_of_field || settings->roll != 0.0f ||
         settings->filter != RECOMP_CAMERA_FILTER_NONE || settings->vignette != 0u ||
         settings->grain != 0u || effects->letterbox > 0.0f || settings->exposure != 0 ||
-        settings->contrast != 0 || settings->saturation != 10u || settings->bloom != 0u ||
+        settings->contrast != 0 || settings->saturation != 10u || settings->bloom != 0u || settings->occlusion != 0u ||
         settings->transparent;
 }

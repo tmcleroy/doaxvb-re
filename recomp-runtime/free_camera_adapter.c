@@ -204,6 +204,8 @@ static struct {
     /* A playing path's look at this frame, blended from its views'. */
     bool play_looked;
     RecompCameraEffects play_look;
+    /* Each girl's own Eyes and Mouth choices (Faces: each girl her own). */
+    unsigned girl_eyes[4], girl_mouth[4];
     /* Tracking her (the Track her row): the point followed, smoothed, and
        for following, the camera's place from it. */
     bool tracking, following;
@@ -379,6 +381,7 @@ static void frame_started(void);
 static void draw_viewed(const float view[16]);
 static void scene_runs(void);
 static void step_tracked(const RecompFreeCameraControls *controls, float seconds);
+static void face_swap(RecompCameraSettingRow row);
 static void apply_studio_lights(void);
 
 void recomp_free_camera_set_source(RecompInputSampleSource source)
@@ -486,6 +489,8 @@ static void use_spot(unsigned spot, bool save)
 static void reset_settings(void)
 {
     recomp_camera_settings_default(&state.settings);
+    memset(state.girl_eyes, 0, sizeof state.girl_eyes);
+    memset(state.girl_mouth, 0, sizeof state.girl_mouth);
     if (state.started && state.start_fov > 0.0f) state.camera.fov = state.start_fov;
     recomp_actor_pose_place_reset(true);
     fprintf(stderr, "recomp free camera: settings reset\n");
@@ -556,8 +561,10 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
     } else if (steps != 0 && state.setting_row == RECOMP_CAMERA_SETTING_POSE) {
         step_pose(steps > 0 ? 1 : -1);
     } else if (steps != 0 && state.setting_row >= 0) {
+        face_swap((RecompCameraSettingRow)state.setting_row);
         recomp_camera_settings_change(&state.settings, (RecompCameraSettingRow)state.setting_row,
             steps, &state.camera.fov, state.character_focus);
+        face_swap((RecompCameraSettingRow)state.setting_row);
     }
     const bool put_back = state.setting_row == RECOMP_CAMERA_SETTING_MOVE_HER &&
         gamepad->analog_buttons[ANALOG_A] >= ANALOG_PRESSED;
@@ -1051,6 +1058,23 @@ static void build_camera(void)
 
 }
 
+/* With Faces each girl's own, the Eyes and Mouth rows show and change the
+   chosen girl's choices: they are swapped into the settings around the
+   row's change or description, and back. */
+static void face_swap(RecompCameraSettingRow row)
+{
+    if (!state.settings.face_each ||
+        (row != RECOMP_CAMERA_SETTING_EYES && row != RECOMP_CAMERA_SETTING_MOUTH)) return;
+    RecompActorPoseStatus pose;
+    recomp_actor_pose_status(&pose);
+    const unsigned girl = pose.actor < 4u ? pose.actor : 0u;
+    unsigned *own = row == RECOMP_CAMERA_SETTING_EYES ? &state.girl_eyes[girl] : &state.girl_mouth[girl];
+    unsigned *shared = row == RECOMP_CAMERA_SETTING_EYES ? &state.settings.eyes : &state.settings.mouth;
+    const unsigned held = *own;
+    *own = *shared;
+    *shared = held;
+}
+
 /* The rim and fill lights, on the characters only (the draw adapter adds
    them after the game's lights), placed by the camera: the rim light from
    behind her, above and to one side, so her hair, shoulders and an edge
@@ -1253,8 +1277,10 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
         for (unsigned line = 0u; line < page->count; ++line) {
             const int row = (int)page->rows[line];
             char value[RECOMP_OVERLAY_LINE_SIZE];
+            face_swap((RecompCameraSettingRow)row);
             recomp_camera_settings_describe(&state.settings, (RecompCameraSettingRow)row, state.camera.fov,
                 state.character_focus, value, sizeof value);
+            face_swap((RecompCameraSettingRow)row);
             if (row == RECOMP_CAMERA_SETTING_PATH)
                 snprintf(value, sizeof value, "Camera path: %u views (right adds this view, left removes)", state.path.count);
             else if (row == RECOMP_CAMERA_SETTING_PATH_PLAY && state.playing)
@@ -1474,9 +1500,12 @@ void recomp_free_camera_overlay(bool viewer)
         /* A playing path's look, through this frame's lens; screenshots keep
            the settings' background. */
         const bool transparent = effects.transparent;
+        const float occlusion = effects.occlusion;
         effects = state.play_look;
         effects.fov = state.camera.fov;
         effects.transparent = transparent;
+        effects.occlusion = occlusion;
+        effects.active = effects.active || occlusion > 0.0f;
     }
     effects.active = effects.active && state.active && state.started;
     effects.recording = state.playing && state.settings.record && state.active;
@@ -1492,9 +1521,14 @@ void recomp_free_camera_overlay(bool viewer)
     recomp_camera_effects_publish(&effects);
     keep_settings();
     apply_studio_lights();
-    int eyes = -1, mouth = -1;
-    if (state.active && state.started) recomp_camera_settings_face(&state.settings, &eyes, &mouth);
-    recomp_body_morph_hold_face(eyes, mouth);
+    int eyes[4] = {-1, -1, -1, -1}, mouth[4] = {-1, -1, -1, -1};
+    for (unsigned girl = 0u; girl < 4u && state.active && state.started; ++girl) {
+        if (state.settings.face_each)
+            recomp_camera_settings_face_shapes(state.girl_eyes[girl], state.girl_mouth[girl], &eyes[girl], &mouth[girl]);
+        else
+            recomp_camera_settings_face(&state.settings, &eyes[girl], &mouth[girl]);
+    }
+    recomp_body_morph_hold_faces(eyes, mouth);
     apply_hiding();
 }
 #else

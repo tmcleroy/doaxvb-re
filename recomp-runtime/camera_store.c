@@ -25,11 +25,11 @@ static const struct {
     FIELD(orbit, KIND_WORD), FIELD(track, KIND_WORD), FIELD(hide_ball, KIND_BOOL),
     FIELD(hide_others, KIND_BOOL), FIELD(shot_size, KIND_WORD), FIELD(time_of_day, KIND_WORD),
     FIELD(light_angle, KIND_INT), FIELD(light_strength, KIND_WORD), FIELD(rim_light, KIND_WORD),
-    FIELD(fill_light, KIND_WORD), FIELD(exposure, KIND_INT), FIELD(contrast, KIND_INT),
+    FIELD(fill_light, KIND_WORD), FIELD(occlusion, KIND_WORD), FIELD(exposure, KIND_INT), FIELD(contrast, KIND_INT),
     FIELD(saturation, KIND_WORD), FIELD(bloom, KIND_WORD), FIELD(grid, KIND_WORD),
     FIELD(spot, KIND_WORD), FIELD(transparent, KIND_BOOL), FIELD(backdrop, KIND_WORD),
     FIELD(path_seconds, KIND_WORD), FIELD(slow, KIND_WORD), FIELD(motion_blur, KIND_WORD),
-    FIELD(eye_contact, KIND_WORD), FIELD(eyes, KIND_WORD), FIELD(mouth, KIND_WORD),
+    FIELD(eye_contact, KIND_WORD), FIELD(face_each, KIND_BOOL), FIELD(eyes, KIND_WORD), FIELD(mouth, KIND_WORD),
 };
 #undef FIELD
 enum { FIELD_COUNT = sizeof FIELDS / sizeof FIELDS[0] };

@@ -36,6 +36,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_LIGHT_STRENGTH,
     RECOMP_CAMERA_SETTING_RIM_LIGHT,
     RECOMP_CAMERA_SETTING_FILL_LIGHT,
+    RECOMP_CAMERA_SETTING_OCCLUSION,
     RECOMP_CAMERA_SETTING_EXPOSURE,
     RECOMP_CAMERA_SETTING_CONTRAST,
     RECOMP_CAMERA_SETTING_SATURATION,
@@ -53,6 +54,7 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_POSE,
     RECOMP_CAMERA_SETTING_MOVE_HER,
     RECOMP_CAMERA_SETTING_EYE_CONTACT,
+    RECOMP_CAMERA_SETTING_FACES,
     RECOMP_CAMERA_SETTING_EYES,
     RECOMP_CAMERA_SETTING_MOUTH,
     RECOMP_CAMERA_SETTING_COUNT
@@ -107,6 +109,7 @@ typedef struct RecompCameraSettings {
     unsigned light_strength; /* tenths of the key light's own strength (10 is its own) */
     unsigned rim_light;   /* 0 off, else a colour lighting her from behind (recomp_camera_settings_rim) */
     unsigned fill_light;  /* tenths of a white light from the camera's side */
+    unsigned occlusion;   /* ambient occlusion in quarters: 0 off, 4 full */
     int exposure;         /* quarter stops */
     int contrast;         /* percent added */
     unsigned saturation;  /* tenths (10 is the picture's own) */
@@ -121,6 +124,7 @@ typedef struct RecompCameraSettings {
     unsigned motion_blur; /* 0 off, else each frame averages 2 << n pictures (4, 8, 16) */
     unsigned eye_contact; /* 0 off, 1 head, 2 head and eyes */
     bool move_her;        /* the sticks move and turn the chosen girl, not the camera */
+    bool face_each;       /* Eyes and Mouth are each girl's own (the chosen girl's), not everyone's */
     unsigned eyes;        /* 0 the game's own (blinking), else held (recomp_camera_settings_face) */
     unsigned mouth;       /* 0 the game's own, else held */
 } RecompCameraSettings;
@@ -138,6 +142,8 @@ void recomp_camera_settings_default(RecompCameraSettings *settings);
 /* The eye and mouth shapes held on every girl (body_morph_adapter.h), -1
    for the game's own. */
 void recomp_camera_settings_face(const RecompCameraSettings *settings, int *eyes, int *mouth);
+/* The same for Eyes and Mouth choices given by their places in the rows. */
+void recomp_camera_settings_face_shapes(unsigned eyes_choice, unsigned mouth_choice, int *eyes, int *mouth);
 /* The rim light's colour, false when it is off. */
 bool recomp_camera_settings_rim(const RecompCameraSettings *settings, float rgb[3]);
 /* Moves a row by `steps` (negative goes back). The field of view row changes

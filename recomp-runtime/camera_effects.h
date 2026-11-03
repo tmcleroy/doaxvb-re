@@ -56,6 +56,8 @@ typedef struct RecompCameraEffects {
     float exposure, contrast, saturation;
     /* Bloom and sun glare, 0 to 1. */
     float bloom;
+    /* Ambient occlusion, 0 to 1: creases darken (needs the view depth). */
+    float occlusion;
     /* Screenshots keep only the characters (alpha from the presenter's
        character mask) and save a depth picture beside them. */
     bool transparent;

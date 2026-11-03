@@ -352,6 +352,7 @@ the sticks, WASD and the right mouse button still fly.
 | Key light strength | 10% to 300% of the stage's own |
 | Rim light | Off, White, Warm, Cool, Pink, Teal: a light on the girls from behind, above and to one side |
 | Fill light | Off, 10% to 100%: a white light on the girls from the camera's side |
+| Ambient occlusion | Off, 25% to 100%: creases and contact (under arms, hair at the neck, feet in the sand) darken |
 | Exposure | -2 to +2 stops in quarters |
 | Contrast | -50% to +50% |
 | Saturation | 0% to 200% |
@@ -369,8 +370,9 @@ the sticks, WASD and the right mouse button still fly.
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 | Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
 | Eye contact | Off, Head, Head and eyes: every girl turns toward the camera |
-| Eyes | Natural (blinking), Open, Closed, Wink, on every girl |
-| Mouth | Natural, Closed, Slight smile, Lips parted, Teeth, Open, Round, Wide open, Pursed, on every girl |
+| Faces | The same for every girl, or each girl her own (Eyes and Mouth then set the chosen girl's) |
+| Eyes | Natural (blinking), Open, Closed, Wink |
+| Mouth | Natural, Closed, Slight smile, Lips parted, Teeth, Open, Round, Wide open, Pursed |
 
 Orbit starts from where the camera is, round the point in focus: the
 character nearest the middle of the picture, else the camera's target. The
@@ -466,6 +468,15 @@ the sound as AAC without encoding the picture again and puts it in place of
 the silent file in one step. Muted (`RECOMP_AUDIO_GAIN=0`, no device) the
 video is silent, as before. In slow motion the sound runs at its own speed.
 
+Ambient occlusion is worked out in the effects pass from the view depth
+alone (`camera_effects_shader.h`), on every presenter that draws it: eight
+pairs of points on opposite sides of the pixel, out to a quarter unit; where
+both of a pair are nearer than the pixel (a crease or a contact) it darkens,
+by up to 75% at full strength, while a slope (one nearer, one farther)
+cancels, and points more than about half a unit away (across a silhouette)
+do not count. It needs the view depth, so it is off where the depth is not
+drawn.
+
 Motion blur draws each frame as the average of 4, 8 or 16 pictures, each
 part of the way from one game frame to the next: slow motion's blend, made
 that many times finer (`step_slow_motion`), at normal speed or slowed. A
@@ -531,7 +542,9 @@ builds are not added to the pose history, and slow
 motion and stepped-back poses are left alone. 0x000AE3F0 inverts each bone
 through the scratch matrix at 0x00A24190, which is put back after.
 
-Eyes and Mouth hold a face shape on every girl. A girl's face is a morph
+Eyes and Mouth hold a face shape on every girl, or with Faces set to each
+girl her own, on the chosen girl (the free camera keeps a choice per girl and
+the rows show and change hers), so a group shot can mix expressions. A girl's face is a morph
 mesh (`docs/body-morph.md`) with two blend records in her block at
 `0x004C9CA0 + n * 0xBC`: her mouth at `+0x3C` (10 shapes) and her eyes at
 `+0x90` (6 shapes; the game blinks between 0 and 1). The blend

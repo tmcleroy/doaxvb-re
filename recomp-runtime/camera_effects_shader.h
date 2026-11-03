@@ -21,7 +21,7 @@ namespace recomp_effects {
 struct EffectsUniforms {
     float size[4];     // width, height, 1/width, 1/height
     float dof[4];      // on, blur scale (px), focus (world units; 0 = the centre's depth), largest blur (px)
-    float taps[4];     // gather taps, -
+    float taps[4];     // gather taps, transparent, ambient occlusion amount, its reach (px at 1 unit)
     float look[4];     // vignette, grain, letterbox aspect (0 = none), frame number
     float grade[3][4]; // colour matrix rows
     float bloom[4];    // amount, reach (px), brightness it starts at, -
@@ -44,6 +44,28 @@ inline constexpr char kEffectsBody[] = R"(
         }
     }
     float3 rgb = SAMPLE(color_tex, color_smp, st).rgb;
+    // Ambient occlusion from the view depth alone: of twelve pairs of points on
+    // opposite sides of the pixel, a crease has both nearer than the pixel,
+    // while a slope has one nearer and one farther and cancels. Within a
+    // quarter unit, and not across a silhouette; creases shallower than a
+    // few hundredths of a unit (the sand's ripples) are left alone.
+    if (p.taps.z > 0.0) {
+        float d0 = SAMPLE(depth_tex, depth_smp, st).r;
+        if (d0 < 500.0) {
+            float reach = min(p.taps.w / max(d0, 0.1), 0.05 * p.size.y);
+            float occlusion = 0.0;
+            for (int i = 0; i < 12; ++i) {
+                float a = float(i) * 2.39996323;
+                float2 o = float2(cos(a), sin(a)) * reach * sqrt((float(i) + 0.5) / 12.0) * p.size.zw;
+                float near_a = SAMPLE(depth_tex, depth_smp, st + o).r;
+                float near_b = SAMPLE(depth_tex, depth_smp, st - o).r;
+                float h = d0 - 0.5 * (near_a + near_b);
+                float across = max(abs(d0 - near_a), abs(d0 - near_b));
+                occlusion += smoothstep(0.03, 0.12, h) * (1.0 - smoothstep(0.3, 0.8, across));
+            }
+            rgb *= 1.0 - p.taps.z * 0.55 * occlusion / 12.0;
+        }
+    }
     if (p.dof.x > 0.5) {
         float focus = p.dof.z;
         if (focus <= 0.0) {
@@ -227,6 +249,11 @@ inline EffectsUniforms effectsUniforms(const RecompCameraEffects &settings, cons
     u.taps[0] = std::min(96.0f * frame.bigger * frame.bigger, 1536.0f);
     u.taps[1] = settings.transparent ? 1.0f : 0.0f;
     u.dof[0] = settings.depth_of_field && frame.depth_drawn ? 1.0f : 0.0f;
+    // Ambient occlusion reaches a quarter unit: that many pixels at 1 unit.
+    if (settings.occlusion > 0.0f && frame.depth_drawn && settings.fov > 0.0f) {
+        u.taps[2] = settings.occlusion;
+        u.taps[3] = 0.25f * height / (2.0f * std::tan(0.5f * settings.fov));
+    }
     // An automatic focus scales the blur as if focused at 2.5 units.
     u.dof[1] = recomp_camera_effects_blur_scale(&settings, focus > 0.0f ? focus : 2.5f, height);
     u.dof[2] = focus;

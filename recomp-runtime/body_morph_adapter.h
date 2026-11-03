@@ -19,6 +19,8 @@ RecompFunction recomp_body_morph_lookup_manual(uint32_t guest_address);
    shapes: 0 open, 1 closed, 4 a wink) or mouth set (10), or -1 to leave
    the game's own. */
 void recomp_body_morph_hold_face(int eyes, int mouth);
+/* The same, each girl her own (indexed by character, 0 to 3). */
+void recomp_body_morph_hold_faces(const int eyes[4], const int mouth[4]);
 
 #ifdef __cplusplus
 }

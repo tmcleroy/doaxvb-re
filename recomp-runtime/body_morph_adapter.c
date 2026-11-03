@@ -229,20 +229,28 @@ enum {
     RECORD_SIZE = 0x24u,
 };
 
-static int held_eyes = -1, held_mouth = -1;
+static int held_eyes[4] = {-1, -1, -1, -1}, held_mouth[4] = {-1, -1, -1, -1};
+
+void recomp_body_morph_hold_faces(const int eyes[4], const int mouth[4])
+{
+    for (unsigned girl = 0u; girl < 4u; ++girl) {
+        held_eyes[girl] = eyes[girl];
+        held_mouth[girl] = mouth[girl];
+    }
+}
 
 void recomp_body_morph_hold_face(int eyes, int mouth)
 {
-    held_eyes = eyes;
-    held_mouth = mouth;
+    const int all_eyes[4] = {eyes, eyes, eyes, eyes}, all_mouth[4] = {mouth, mouth, mouth, mouth};
+    recomp_body_morph_hold_faces(all_eyes, all_mouth);
 }
 
 /* The shape held for this record, or -1. */
 static int held_shape(uint32_t record)
 {
     if (record < FACE_FIRST || record >= FACE_FIRST + 4u * FACE_STRIDE) return -1;
-    const uint32_t at = (record - FACE_FIRST) % FACE_STRIDE;
-    return at == FACE_EYES ? held_eyes : at == FACE_MOUTH ? held_mouth : -1;
+    const uint32_t girl = (record - FACE_FIRST) / FACE_STRIDE, at = (record - FACE_FIRST) % FACE_STRIDE;
+    return at == FACE_EYES ? held_eyes[girl] : at == FACE_MOUTH ? held_mouth[girl] : -1;
 }
 
 static void blend_entry(void)
