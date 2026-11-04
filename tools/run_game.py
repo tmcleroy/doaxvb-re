@@ -76,7 +76,7 @@ TITLE_IDLE = ("default", "no-cutscene", "cpu-exhibition")
 # Frames a demo scene cut holds when the launcher's "Shorter demo cuts" is on.
 DEMO_CUT_HOLD_SHORT = "12"
 # The amount (0 to 1) each graphics option ticked in the launcher asks for.
-GRAPHICS_ON = {"ambient_occlusion": "0.5", "bloom": "0.3", "skin_soft": "1", "skin_sheen": "1"}
+GRAPHICS_ON = {"sun_soft": "1", "ambient_occlusion": "0.5", "bloom": "0.3", "skin_soft": "1", "skin_sheen": "1"}
 
 
 def saved_launcher_settings(root):
@@ -93,6 +93,7 @@ def saved_launcher_settings(root):
                 "RECOMP_D3D_SUN_SHADOW": "1" if settings.get("sun_shadows") is True else "0",
                 # Graphics options (docs/graphics-options.md): anisotropic
                 # filtering is on unless turned off; the rest are off unless on.
+                "RECOMP_D3D_SUN_SOFT": GRAPHICS_ON["sun_soft"] if settings.get("sun_soft") is True else "0",
                 "RECOMP_D3D_ANISOTROPY": "0" if settings.get("anisotropy") is False else "1",
                 "RECOMP_D3D_OCCLUSION": GRAPHICS_ON["ambient_occlusion"]
                 if settings.get("ambient_occlusion") is True else "0",

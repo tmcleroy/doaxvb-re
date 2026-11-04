@@ -98,7 +98,7 @@ struct SunUniforms {
 // taps spaced by the pixel's footprint in the map, receiver-plane depth on flat ground,
 // faded over the outer tenth of the box.
 constexpr char kMslSunVisibility[] = R"(
-static float sun_visibility(depth2d<float> map, sampler smp, constant SunUniforms &sun,
+static float sun_visibility(depth2d<float> map, sampler smp, depth2d<float> raw, constant SunUniforms &sun,
                             float3 p, float soft, bool plane) {
     float3 q = (sun.projection * float4(p, 1.0)).xyz;
     float2 uv = q.xy * float2(0.5, -0.5) + 0.5;
@@ -112,6 +112,20 @@ static float sun_visibility(depth2d<float> map, sampler smp, constant SunUniform
     float2 slope = plane && abs(determinant) > 1e-12 ?
         float2(dy.y * dz.x - dx.y * dz.y, dx.x * dz.y - dy.x * dz.x) / determinant : float2(0.0);
     float bias = 0.0002 + dot(abs(slope), float2(texel));
+    // Soft sun shadows: the blockers' average depth in a 4x4 search, then a
+    // filter as wide as the penumbra a sun of that size casts from there.
+    if (sun.light.w > 0.0) {
+        float found = 0.0, total = 0.0;
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 4; ++x) {
+                float2 at = clamp(uv + (float2(x, y) - 1.5) * (16.0 / 1.5) * texel, 0.0, 1.0);
+                float d = raw.read(uint2(at * 4095.0));
+                if (d < q.z - bias) { found += 1.0; total += d; }
+            }
+        if (found == 0.0) return 1.0;
+        float penumbra = (q.z - total / found) * sun.light.w;
+        spacing = max(spacing, float2(min(penumbra * 0.25, 8.0 * texel)));
+    }
     float visibility = 0.0;
     for (int y = 0; y < 5; ++y)
         for (int x = 0; x < 5; ++x) {
@@ -137,6 +151,20 @@ float sun_visibility(vec3 p, float soft, bool plane) {
     vec2 slope = plane && abs(determinant) > 1e-12 ?
         vec2(dy.y * dz.x - dx.y * dz.y, dx.x * dz.y - dy.x * dz.x) / determinant : vec2(0.0);
     float bias = 0.0002 + dot(abs(slope), vec2(texel));
+    // Soft sun shadows: the blockers' average depth in a 4x4 search, then a
+    // filter as wide as the penumbra a sun of that size casts from there.
+    if (sun.light.w > 0.0) {
+        float found = 0.0, total = 0.0;
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 4; ++x) {
+                vec2 at = clamp(uv + (vec2(x, y) - 1.5) * (16.0 / 1.5) * texel, vec2(0.0), vec2(1.0));
+                float d = texelFetch(sun_map_raw, ivec2(at * 4095.0), 0).r;
+                if (d < q.z - bias) { found += 1.0; total += d; }
+            }
+        if (found == 0.0) return 1.0;
+        float penumbra = (q.z - total / found) * sun.light.w;
+        spacing = max(spacing, vec2(min(penumbra * 0.25, 8.0 * texel)));
+    }
     float visibility = 0.0;
     for (int y = 0; y < 5; ++y)
         for (int x = 0; x < 5; ++x) {
@@ -171,7 +199,7 @@ std::string sunApplySource(bool msl)
     swap("VEC3", msl ? "float3" : "vec3");
     swap("SUN_NORMAL", msl ? "in.sun_normal" : "v_sun_normal");
     swap("SUN_WORLD", msl ? "in.sun_world" : "v_sun_world");
-    swap("SUN_VISIBILITY(", msl ? "sun_visibility(sun_map, sun_sampler, sun, " : "sun_visibility(");
+    swap("SUN_VISIBILITY(", msl ? "sun_visibility(sun_map, sun_sampler, sun_map_raw, sun, " : "sun_visibility(");
     if (msl) swap("inversesqrt", "rsqrt");
     return s;
 }
@@ -493,6 +521,8 @@ struct SdlSunShadow : SunCamera {
     std::vector<uint8_t> vertex_data, index_data;
     SDL_GPUTexture *map = nullptr;
     SDL_GPUSampler *sampler = nullptr;
+    // Nearest, no comparison: the map read as depth (soft shadows' blocker search).
+    SDL_GPUSampler *raw_sampler = nullptr;
     SDL_GPUBuffer *vertex_buffer = nullptr, *index_buffer = nullptr;
     SDL_GPUTransferBuffer *vertex_transfer = nullptr, *index_transfer = nullptr;
     uint32_t vertex_capacity = 0, index_capacity = 0;
@@ -1418,7 +1448,10 @@ std::string buildMslShader(const RecompD3dVertexLayout &layout, uint32_t fvf,
     if (sun) {
         s += "                        sampler mask_sampler [[sampler(1)]],\n";
         s += "                        depth2d<float> sun_map [[texture(2)]],\n";
-        s += "                        sampler sun_sampler [[sampler(2)]]) {\n";
+        s += "                        sampler sun_sampler [[sampler(2)]],\n";
+        // The same map read as plain depth, for soft shadows' blocker search.
+        s += "                        depth2d<float> sun_map_raw [[texture(3)]],\n";
+        s += "                        sampler sun_raw_sampler [[sampler(3)]]) {\n";
     } else {
         s += "                        sampler mask_sampler [[sampler(1)]]) {\n";
     }
@@ -1783,6 +1816,7 @@ std::string buildGlslFragmentShader(const RecompD3dVertexLayout &layout, uint32_
     if (sun) {
         s += glslSunUniforms(true);
         s += "layout(set = 2, binding = 2) uniform sampler2DShadow sun_map;\n";
+        s += "layout(set = 2, binding = 3) uniform sampler2D sun_map_raw;\n";
         s += "layout(location = 7) in vec3 v_sun_world;\n";
         s += "layout(location = 8) in vec3 v_sun_normal;\n";
         s += kGlslSunVisibility;
@@ -2054,7 +2088,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
         fs_info.entrypoint = "main";
         fs_info.format = SDL_GPU_SHADERFORMAT_SPIRV;
         fs_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-        fs_info.num_samplers = sun ? 3 : 2;
+        fs_info.num_samplers = sun ? 4 : 2;
         fs_info.num_uniform_buffers = sun ? 2 : 1;
         SDL_GPUShader *fs = SDL_CreateGPUShader(presenter->device, &fs_info);
 
@@ -2085,7 +2119,7 @@ ShaderPair getOrCreateShaderPair(RecompD3dPresenter *presenter, const RecompD3dV
     fs_info.entrypoint = "ps_main";
     fs_info.format = SDL_GPU_SHADERFORMAT_MSL;
     fs_info.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    fs_info.num_samplers = sun ? 3 : 2;
+    fs_info.num_samplers = sun ? 4 : 2;
     fs_info.num_uniform_buffers = sun ? 2 : 1;
     SDL_GPUShader *fs = SDL_CreateGPUShader(presenter->device, &fs_info);
 
@@ -2493,8 +2527,9 @@ void flushSegment(RecompD3dPresenter *presenter)
             // A program draw since the last sun draw may have replaced vertex slot 1.
             if (q.program_offset != kNoProgramConstants) last_sun_offset = kNoProgramConstants;
             if (sun_draw && !last_sun_bound) {
-                SDL_GPUTextureSamplerBinding map{presenter->sun.map, presenter->sun.sampler};
-                SDL_BindGPUFragmentSamplers(rpass, 2, &map, 1);
+                const SDL_GPUTextureSamplerBinding maps[2] = {{presenter->sun.map, presenter->sun.sampler},
+                    {presenter->sun.map, presenter->sun.raw_sampler}};
+                SDL_BindGPUFragmentSamplers(rpass, 2, maps, 2);
                 last_sun_bound = true;
             }
 
@@ -2680,6 +2715,7 @@ void sunRelease(RecompD3dPresenter *presenter)
     if (sun.vertex_transfer) SDL_ReleaseGPUTransferBuffer(presenter->device, sun.vertex_transfer);
     if (sun.index_transfer) SDL_ReleaseGPUTransferBuffer(presenter->device, sun.index_transfer);
     if (sun.sampler) SDL_ReleaseGPUSampler(presenter->device, sun.sampler);
+    if (sun.raw_sampler) SDL_ReleaseGPUSampler(presenter->device, sun.raw_sampler);
     if (sun.map) SDL_ReleaseGPUTexture(presenter->device, sun.map);
     sun = SdlSunShadow{};
 }
@@ -2710,7 +2746,10 @@ bool sunCreate(RecompD3dPresenter *presenter)
     sampler.enable_compare = true;
     sampler.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
     sun.sampler = SDL_CreateGPUSampler(presenter->device, &sampler);
-    if (!sun.map || !sun.sampler) {
+    sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
+    sampler.enable_compare = false;
+    sun.raw_sampler = SDL_CreateGPUSampler(presenter->device, &sampler);
+    if (!sun.map || !sun.sampler || !sun.raw_sampler) {
         std::fprintf(stderr, "recomp sun shadow: resource creation failed; disabled\n");
         sunRelease(presenter);
         return false;
@@ -2837,6 +2876,7 @@ void sunObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawC
     block[17] = sun.game_alpha;
     block[19] = lit_model ? 1.0f : 0.0f;
     for (unsigned i = 0; i < 3; ++i) block[20 + i] = -sun.map_direction[i];
+    block[23] = sunSoftness();
     std::memcpy(block + 24, draw.world, sizeof draw.world);
 }
 

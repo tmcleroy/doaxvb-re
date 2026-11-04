@@ -3,6 +3,8 @@
 
 #include "d3d_matrix.h"
 
+#include <cstdlib>
+
 // Sun shadow selection, fitting and texture rules shared by the D3D11 and SDL_GPU
 // presenters. No GPU objects live here; each presenter keeps its own resources.
 namespace {
@@ -10,6 +12,20 @@ namespace {
 // 4096 texels over 64 units: ~0.016-unit texels, finer than the old 2048/48.
 constexpr unsigned kSunMapSize = 4096;
 constexpr float kSunBox = 64, kSunAhead = 20, kSunDepth = 120;
+
+/* Soft sun shadows (docs/graphics-options.md): RECOMP_D3D_SUN_SOFT, 0 to 1,
+   gives the sun a size: a shadow's edge widens by 0.03 units per unit
+   between caster and receiver at 1 (the real sun's is 0.0093). Returned in
+   the units the shaders use: map uv per unit of map depth. 0 is off. */
+inline float sunSoftness()
+{
+    static const float softness = [] {
+        const char *text = std::getenv("RECOMP_D3D_SUN_SOFT");
+        const float amount = text != nullptr ? std::strtof(text, nullptr) : 0.0f;
+        return amount > 0.0f ? (amount < 1.0f ? amount : 1.0f) * 0.03f * kSunDepth / kSunBox : 0.0f;
+    }();
+    return softness;
+}
 
 // Camera selection and the light box fitted to it.
 struct SunCamera {

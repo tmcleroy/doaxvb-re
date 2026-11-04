@@ -89,7 +89,7 @@ $settings = [pscustomobject]@{
     sun_shadows = $false; demo_cut_hold = $false; title_idle = 'default'; unlock_swimsuits = $false; free_camera = $false
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true
-    anisotropy = $true; ambient_occlusion = $false; bloom = $false; skin_soft = $false; skin_sheen = $false
+    anisotropy = $true; ambient_occlusion = $false; bloom = $false; skin_soft = $false; skin_sheen = $false; sun_soft = $false
 }
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
@@ -356,7 +356,11 @@ $occlusion = New-Toggle $pages[3] 'Ambient occlusion (creases and contact darken
 $bloom = New-Toggle $pages[3] 'Bloom and sun glare' 56 $settings.bloom
 $skinSoft = New-Toggle $pages[3] 'Soft skin (light passes under the skin)' 84 $settings.skin_soft
 $skinSheen = New-Toggle $pages[3] 'Skin sheen (a soft highlight)' 112 $settings.skin_sheen
-New-Note $pages[3] 'Ambient occlusion and bloom also work outside the free camera; the free camera can add more of each.' 148 40 | Out-Null
+$sunSoft = New-Toggle $pages[3] 'Soft sun shadows (edges soften farther from the caster)' 140 $settings.sun_soft
+# Soft sun shadows soften the Graphics page's sun shadows.
+$sunSoft.Enabled = $sun.Checked
+$sun.Add_CheckedChanged({ $sunSoft.Enabled = $sun.Checked })
+New-Note $pages[3] 'Ambient occlusion and bloom also work outside the free camera; the free camera can add more of each. Soft sun shadows need Sun shadows on.' 176 48 | Out-Null
 
 # PowerShell 7 loads JSON numbers as Int64, so cast before finding their index.
 $savedVolume = [Array]::IndexOf($volumes, [int]$settings.volume)
@@ -521,7 +525,7 @@ $percent = $volumes[$volume.SelectedIndex]
     sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
-    anisotropy = $anisotropy.Checked; ambient_occlusion = $occlusion.Checked; bloom = $bloom.Checked; skin_soft = $skinSoft.Checked; skin_sheen = $skinSheen.Checked
+    anisotropy = $anisotropy.Checked; ambient_occlusion = $occlusion.Checked; bloom = $bloom.Checked; skin_soft = $skinSoft.Checked; skin_sheen = $skinSheen.Checked; sun_soft = $sunSoft.Checked
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -552,4 +556,5 @@ $env:RECOMP_D3D_OCCLUSION = if ($occlusion.Checked) { '0.5' } else { '0' }
 $env:RECOMP_D3D_BLOOM = if ($bloom.Checked) { '0.3' } else { '0' }
 $env:RECOMP_D3D_SKIN_SOFT = if ($skinSoft.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_SKIN_SHEEN = if ($skinSheen.Checked) { '1' } else { '0' }
+$env:RECOMP_D3D_SUN_SOFT = if ($sunSoft.Checked) { '1' } else { '0' }
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

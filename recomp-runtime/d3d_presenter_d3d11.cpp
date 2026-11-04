@@ -3609,6 +3609,7 @@ RecompD3dPresenterError submitDraw(
         constants[19] = lit_model ? 1.0f : 0.0f;
         std::memcpy(constants + 20, draw.world[0], sizeof draw.world[0]);
         for (unsigned i = 0; i < 3; ++i) constants[36 + i] = -sun.direction[i];
+        constants[39] = sunSoftness();
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;

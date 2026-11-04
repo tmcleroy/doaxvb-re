@@ -51,7 +51,7 @@ try {
     [Threading.Thread]::CurrentThread.CurrentCulture = 'de-DE'
     $defaults = @{ RECOMP_D3D_VRR = '0'; RECOMP_D3D_FOG = '1'; RECOMP_TEXTURES = $null; RECOMP_TEXTURE_DUMP = '0'; RECOMP_TEXTURE_DUMP_DIR = (Join-Path $testRoot 'private\textures'); RECOMP_D3D_PIXEL_LIGHTING = '0'; RECOMP_D3D_SMOOTH_NORMALS = '0'; RECOMP_D3D_RTGI = '0'; RECOMP_D3D_RTGI_STRENGTH = '1'; RECOMP_D3D_RTGI_HITCOLOR = '1'; RECOMP_AUDIO_GAIN = '1'
         RECOMP_D3D_SUN_SHADOW = '0'; RECOMP_TITLE_IDLE = 'default'; RECOMP_UNLOCK_SWIMSUITS = '0'; RECOMP_DEMO_CUT_HOLD = $null; RECOMP_FREE_CAMERA = $null
-        RECOMP_D3D_ANISOTROPY = '1'; RECOMP_D3D_OCCLUSION = '0'; RECOMP_D3D_BLOOM = '0'; RECOMP_D3D_SKIN_SOFT = '0'; RECOMP_D3D_SKIN_SHEEN = '0' }
+        RECOMP_D3D_ANISOTROPY = '1'; RECOMP_D3D_OCCLUSION = '0'; RECOMP_D3D_BLOOM = '0'; RECOMP_D3D_SKIN_SOFT = '0'; RECOMP_D3D_SKIN_SHEEN = '0'; RECOMP_D3D_SUN_SOFT = '0' }
     $chooseDefaults = {
         Assert ($fog.Checked -and !$rtgi.Checked -and !$vrr.Checked -and !$textures.Checked) 'Wrong new-option defaults'
         Assert ($anisotropy.Checked -and !$occlusion.Checked -and !$bloom.Checked -and !$skinSoft.Checked -and !$skinSheen.Checked) 'Wrong graphics defaults'
@@ -64,13 +64,13 @@ try {
     $pack = Join-Path $testRoot ('pack ' + [char]0x00e9)
     $all = @{ height = 1080; msaa = 8; smaa = $true; volume = 75; shuffle = $true; vrr = $true; fog = $false; textures = $true; textureFolder = $pack; textureDump = $true; pixelLighting = $true; smoothNormals = $true; rtgi = $true; rtgiStrength = 1.25; rtgiHitColor = $false
         sun_shadows = $true; demo_cut_hold = $true; title_idle = 'cpu-exhibition'; unlock_swimsuits = $true; free_camera = $true
-        anisotropy = $false; ambient_occlusion = $true; bloom = $true; skin_soft = $true; skin_sheen = $true } | ConvertTo-Json
+        anisotropy = $false; ambient_occlusion = $true; bloom = $true; skin_soft = $true; skin_sheen = $true; sun_soft = $true } | ConvertTo-Json
     Check-Launch $all {
         Assert ($rtgi.Checked -and $strength.Enabled -and $hitColor.Enabled) 'RTGI controls must be enabled'
         'OK'
     } @{ RECOMP_D3D_SCALE = '2.25'; RECOMP_D3D_MSAA = '8'; RECOMP_D3D_SMAA = '1'; RECOMP_AUDIO_GAIN = '0.75'; RECOMP_MUSIC_SHUFFLE = '1'; RECOMP_D3D_VRR = '1'; RECOMP_D3D_FOG = '0'; RECOMP_TEXTURES = $pack; RECOMP_TEXTURE_DUMP = '1'; RECOMP_D3D_PIXEL_LIGHTING = '1'; RECOMP_D3D_SMOOTH_NORMALS = '1'; RECOMP_D3D_RTGI = '1'; RECOMP_D3D_RTGI_STRENGTH = '1.25'; RECOMP_D3D_RTGI_HITCOLOR = '0'
         RECOMP_D3D_SUN_SHADOW = '1'; RECOMP_TITLE_IDLE = 'cpu-exhibition'; RECOMP_UNLOCK_SWIMSUITS = '1'; RECOMP_DEMO_CUT_HOLD = '12'; RECOMP_FREE_CAMERA = '1'
-        RECOMP_D3D_ANISOTROPY = '0'; RECOMP_D3D_OCCLUSION = '0.5'; RECOMP_D3D_BLOOM = '0.3'; RECOMP_D3D_SKIN_SOFT = '1'; RECOMP_D3D_SKIN_SHEEN = '1' }
+        RECOMP_D3D_ANISOTROPY = '0'; RECOMP_D3D_OCCLUSION = '0.5'; RECOMP_D3D_BLOOM = '0.3'; RECOMP_D3D_SKIN_SOFT = '1'; RECOMP_D3D_SKIN_SHEEN = '1'; RECOMP_D3D_SUN_SOFT = '1' }
     Check-Launch $all {
         $rtgi.Checked = $false; $vrr.Checked = $false; $fog.Checked = $true; $textures.Checked = $false
         $textureDump.Checked = $false; $pixelLighting.Checked = $false; $smoothNormals.Checked = $false

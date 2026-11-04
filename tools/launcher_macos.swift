@@ -46,6 +46,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let freeCamera = NSButton(checkboxWithTitle: "Free camera", target: nil, action: nil)
     let sunShadows = NSButton(checkboxWithTitle: "Sun shadows", target: nil, action: nil)
     // Graphics enhancements; see docs/graphics-options.md.
+    let sunSoft = NSButton(checkboxWithTitle: "Soft sun shadows", target: nil, action: nil)
     let anisotropy = NSButton(checkboxWithTitle: "Anisotropic filtering", target: nil, action: nil)
     let occlusion = NSButton(checkboxWithTitle: "Ambient occlusion", target: nil, action: nil)
     let bloom = NSButton(checkboxWithTitle: "Bloom and sun glare", target: nil, action: nil)
@@ -90,14 +91,19 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         smaa.isEnabled = false
         // Off keeps the game's original shadows; see docs/sun-shadow.md.
         sunShadows.state = boolSetting("sun_shadows") ? .on : .off
+        sunSoft.state = boolSetting("sun_soft") ? .on : .off
         anisotropy.state = boolSetting("anisotropy", true) ? .on : .off
         occlusion.state = boolSetting("ambient_occlusion") ? .on : .off
         bloom.state = boolSetting("bloom") ? .on : .off
         skinSoft.state = boolSetting("skin_soft") ? .on : .off
         skinSheen.state = boolSetting("skin_sheen") ? .on : .off
-        for (i, box) in [sunShadows, anisotropy, occlusion, bloom, skinSoft, skinSheen].enumerated() {
+        for (i, box) in [sunShadows, sunSoft, anisotropy, occlusion, bloom, skinSoft, skinSheen].enumerated() {
             box.frame = NSRect(x: 16, y: 218 - CGFloat(i) * 26, width: 236, height: 20)
         }
+        // Soft sun shadows soften the sun shadows; without them there is nothing to soften.
+        sunSoft.isEnabled = sunShadows.state == .on
+        sunShadows.target = self
+        sunShadows.action = #selector(sunShadowsChanged)
         addRow("Volume", volume, volumes.map { $0 == 0 ? "Mute" : "\($0)%" },
                volumes.firstIndex(of: intSetting("volume", 100)) ?? 0, 306, 276)
         shuffle.state = boolSetting("shuffle") ? .on : .off
@@ -116,12 +122,16 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 416, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, anisotropy, occlusion, bloom,
+        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, sunSoft, anisotropy, occlusion, bloom,
                      skinSoft, skinSheen, idleLabel, idle, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func sunShadowsChanged() {
+        sunSoft.isEnabled = sunShadows.state == .on
     }
 
     @objc func play() {
@@ -135,6 +145,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "demo_cut_hold": demoCut.state == .on,
             "free_camera": freeCamera.state == .on,
             "sun_shadows": sunShadows.state == .on,
+            "sun_soft": sunSoft.state == .on,
             "anisotropy": anisotropy.state == .on,
             "ambient_occlusion": occlusion.state == .on,
             "bloom": bloom.state == .on,

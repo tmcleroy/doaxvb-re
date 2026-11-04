@@ -1,12 +1,13 @@
 # Graphics options
 
-Five launcher options improve how the game looks without changing what it
+Six launcher options improve how the game looks without changing what it
 draws. On macOS and Linux they are in the launcher's **Graphics** column; on
 Windows they have their own **Enhancements** page. Each is an environment
 variable the launcher sets, so a script can set it too.
 
 | Option | Variable | Launcher value | Default |
 |---|---|---|---|
+| Soft sun shadows | `RECOMP_D3D_SUN_SOFT` | `1` (0 to 1) | Off |
 | Anisotropic filtering | `RECOMP_D3D_ANISOTROPY` | `1` on, `0` off | On |
 | Ambient occlusion | `RECOMP_D3D_OCCLUSION` | `0.5` (0 to 1) | Off |
 | Bloom and sun glare | `RECOMP_D3D_BLOOM` | `0.3` (0 to 1) | Off |
@@ -14,8 +15,30 @@ variable the launcher sets, so a script can set it too.
 | Skin sheen | `RECOMP_D3D_SKIN_SHEEN` | `1` (0 to 1) | Off |
 
 `tools/run_game.py` (macOS, Linux) and `tools/launcher.ps1` (Windows) turn the
-saved choices in `private/launcher.json` (`anisotropy`, `ambient_occlusion`,
-`bloom`, `skin_soft`, `skin_sheen`) into these values.
+saved choices in `private/launcher.json` (`sun_soft`, `anisotropy`,
+`ambient_occlusion`, `bloom`, `skin_soft`, `skin_sheen`) into these values.
+
+## Soft sun shadows
+
+With **Sun shadows** on ([`sun-shadow.md`](sun-shadow.md)), this gives the
+sun a size, so a shadow is sharp where it leaves its caster (feet on the
+sand) and softens with distance from it (the far end of a post's or a
+palm's shadow), as real sun shadows do. Each shadowed pixel first reads the
+map's raw depths in a 4x4 search 16 texels wide; if nothing there is nearer
+the sun it is lit, otherwise the blockers' average depth gives the penumbra
+a sun of that size casts over the distance between them, and the existing
+5x5 comparison filter widens to it (up to 8 texels a step). At 1 the
+penumbra grows 0.03 units per unit of distance, about three times the real
+sun's, which shows without blurring nearby shadows (`sunSoftness` in
+`d3d_sun_shadow_model.h`, passed to the shaders as `sun_light.w`).
+
+Metal and Vulkan bind the shadow map a second time, with a nearest sampler
+and no comparison, for the search (slot 3); Direct3D 11 reads it with
+`Load`. On frozen attract scenes on macOS, the far ends of the posts' and
+palms' shadows soften and the shadows at the girls' feet stay sharp; no
+other change showed. The Vulkan shaders compile with glslang; the
+Direct3D 11 code compiles with llvm-mingw and its HLSL with glslang's HLSL
+front end, and has not run on Windows yet.
 
 ## Anisotropic filtering
 

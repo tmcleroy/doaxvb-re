@@ -108,11 +108,12 @@ cbuffer SunShadow : register(b1) {
     row_major float4x4 sun_projection;
     float4 sun_flags;
     row_major float4x4 sun_object; // world matrix; unlit receivers have no lighting position
-    float4 sun_light; // xyz: unit vector toward the sun
+    float4 sun_light; // xyz: unit vector toward the sun; w: soft shadows' sun size (sunSoftness)
 };
 Texture2D<float> sun_depth : register(t2);
 SamplerComparisonState sun_sampler : register(s2);
 static const float sun_texel = 1.0/)") + std::to_string(kSunMapSize) + R"(;
+static const float sun_size = )" + std::to_string(kSunMapSize) + R"(;
 float sunVisibility(float3 p, float soft, bool plane) {
     float3 q = mul(float4(p,1),sun_projection).xyz;
     float2 uv = q.xy * float2(0.5,-0.5) + 0.5;
@@ -129,6 +130,20 @@ float sunVisibility(float3 p, float soft, bool plane) {
         float2(dy.y*dz.x-dx.y*dz.y, dx.x*dz.y-dy.x*dz.x)/determinant : 0;
     // Each tap blends neighbouring texels, so sloped ground needs one texel of slope as bias.
     float bias = 0.0002 + dot(abs(slope), sun_texel);
+    // Soft sun shadows: the blockers' average depth in a 4x4 search, then a
+    // filter as wide as the penumbra a sun of that size casts from there.
+    if (sun_light.w > 0) {
+        float found = 0, total = 0;
+        [unroll] for (int sy=0; sy<4; ++sy)
+            [unroll] for (int sx=0; sx<4; ++sx) {
+                float2 at = saturate(uv + (float2(sx,sy)-1.5)*(16.0/1.5)*sun_texel);
+                float d = sun_depth.Load(int3(at*(sun_size-1), 0));
+                if (d < q.z-bias) { found += 1; total += d; }
+            }
+        if (found == 0) return 1;
+        float penumbra = (q.z - total/found) * sun_light.w;
+        spacing = max(spacing, min(penumbra*0.25, 8*sun_texel));
+    }
     float visibility = 0;
     [unroll] for (int y=0; y<5; ++y)
         [unroll] for (int x=0; x<5; ++x) {
