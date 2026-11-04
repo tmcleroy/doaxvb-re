@@ -1,6 +1,6 @@
 # Graphics options
 
-Six launcher options improve how the game looks without changing what it
+Seven launcher options improve how the game looks without changing what it
 draws. On macOS and Linux they are in the launcher's **Graphics** column; on
 Windows they have their own **Enhancements** page. Each is an environment
 variable the launcher sets, so a script can set it too.
@@ -9,14 +9,36 @@ variable the launcher sets, so a script can set it too.
 |---|---|---|---|
 | Soft sun shadows | `RECOMP_D3D_SUN_SOFT` | `1` (0 to 1) | Off |
 | Anisotropic filtering | `RECOMP_D3D_ANISOTROPY` | `1` on, `0` off | On |
+| HDR output (macOS, Linux) | `RECOMP_D3D_HDR` | `1` on, `0` off | Off |
 | Ambient occlusion | `RECOMP_D3D_OCCLUSION` | `0.5` (0 to 1) | Off |
 | Bloom and sun glare | `RECOMP_D3D_BLOOM` | `0.3` (0 to 1) | Off |
 | Soft skin | `RECOMP_D3D_SKIN_SOFT` | `1` (0 to 1) | Off |
 | Skin sheen | `RECOMP_D3D_SKIN_SHEEN` | `1` (0 to 1) | Off |
 
 `tools/run_game.py` (macOS, Linux) and `tools/launcher.ps1` (Windows) turn the
-saved choices in `private/launcher.json` (`sun_soft`, `anisotropy`,
+saved choices in `private/launcher.json` (`sun_soft`, `anisotropy`, `hdr`,
 `ambient_occlusion`, `bloom`, `skin_soft`, `skin_sheen`) into these values.
+
+## HDR output
+
+On an HDR display the window's swapchain switches to HDR: extended linear
+where the display takes it (Metal's EDR on macOS), else HDR10. The game's
+picture stays as it is up to 60% of SDR white (linear), shown at the
+display's SDR white, and anything brighter eases up to the peak along a
+cubic, all three channels together so colours hold: the sun, sun glare,
+sea glints and skin sheen use the headroom. The peak is 4x SDR white by
+default (`RECOMP_D3D_HDR_PEAK`, 1 to 16), capped at the headroom macOS
+reports for the window's display. HDR10 converts to BT.2020 and encodes PQ
+with SDR white at 203 nits. On a display without HDR, or if the pass
+cannot be set up (the log says so), the window stays SDR.
+
+Only the window changes: screenshots and videos are taken before this
+step, so they stay SDR. The runtime's own panel is drawn into the HDR
+picture with its SDR colours, so it looks a little darker. Direct3D 11
+(Windows) has no HDR output yet. On macOS the window took extended linear
+and the pass ran without errors; the Vulkan shader compiles with glslang.
+How it looks on an HDR screen has not been checked yet: the display was
+asleep when this was written.
 
 ## Soft sun shadows
 

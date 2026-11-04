@@ -95,6 +95,7 @@ def saved_launcher_settings(root):
                 # filtering is on unless turned off; the rest are off unless on.
                 "RECOMP_D3D_SUN_SOFT": GRAPHICS_ON["sun_soft"] if settings.get("sun_soft") is True else "0",
                 "RECOMP_D3D_ANISOTROPY": "0" if settings.get("anisotropy") is False else "1",
+                "RECOMP_D3D_HDR": "1" if settings.get("hdr") is True else "0",
                 "RECOMP_D3D_OCCLUSION": GRAPHICS_ON["ambient_occlusion"]
                 if settings.get("ambient_occlusion") is True else "0",
                 "RECOMP_D3D_BLOOM": GRAPHICS_ON["bloom"] if settings.get("bloom") is True else "0",

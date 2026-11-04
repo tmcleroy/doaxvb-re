@@ -141,12 +141,13 @@ class ExtractionTests(unittest.TestCase):
             root = Path(folder)
             (root / "private").mkdir()
             names = ("RECOMP_D3D_ANISOTROPY", "RECOMP_D3D_OCCLUSION", "RECOMP_D3D_BLOOM",
-                     "RECOMP_D3D_SKIN_SOFT", "RECOMP_D3D_SKIN_SHEEN", "RECOMP_D3D_SUN_SOFT")
-            for saved, expected in (({}, ("1", "0", "0", "0", "0", "0")),
+                     "RECOMP_D3D_SKIN_SOFT", "RECOMP_D3D_SKIN_SHEEN", "RECOMP_D3D_SUN_SOFT", "RECOMP_D3D_HDR")
+            for saved, expected in (({}, ("1", "0", "0", "0", "0", "0", "0")),
                                     ({"anisotropy": False, "ambient_occlusion": True, "bloom": True,
-                                      "skin_soft": True, "skin_sheen": True, "sun_soft": True},
-                                     ("0", "0.5", "0.3", "1", "1", "1")),
-                                    ({"anisotropy": "no", "bloom": "yes"}, ("1", "0", "0", "0", "0", "0"))):
+                                      "skin_soft": True, "skin_sheen": True, "sun_soft": True, "hdr": True},
+                                     ("0", "0.5", "0.3", "1", "1", "1", "1")),
+                                    ({"anisotropy": "no", "bloom": "yes", "hdr": "yes"},
+                                     ("1", "0", "0", "0", "0", "0", "0"))):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 got = saved_launcher_settings(root)
                 self.assertEqual(tuple(got.get(name) for name in names), expected)

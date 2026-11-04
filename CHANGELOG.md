@@ -11,8 +11,9 @@
   (not only in the free camera), and skin shading on the girls: **Soft
   skin** (light passes under the skin at the shadow's edge) and **Skin
   sheen** (a soft highlight), and **Soft sun shadows** (with Sun shadows on,
-  edges soften with distance from what casts them). See
-  `docs/graphics-options.md`.
+  edges soften with distance from what casts them), and **HDR output** on
+  macOS and Linux (highlights such as the sun and sea glints use an HDR
+  display's headroom). See `docs/graphics-options.md`.
 - **Sun shadows on macOS and Linux.** The **Sun shadows** launcher option
   (`RECOMP_D3D_SUN_SHADOW=1`) now works on the Metal and Vulkan presenter as
   well. It uses the same selection, casters, receivers and overlay rules as

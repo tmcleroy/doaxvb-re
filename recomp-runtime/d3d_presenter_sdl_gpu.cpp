@@ -687,6 +687,17 @@ struct RecompD3dPresenter {
         bool failed = false, started = false;
     } blur;
 
+    /* HDR output (docs/graphics-options.md): the window's swapchain in an HDR
+       composition, and the pass that copies the frame into it (hdrPresent). */
+    struct {
+        SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+        float peak = 4.0f;  // the brightest highlight, in multiples of SDR white
+        SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
+        SDL_GPUGraphicsPipeline *pipeline = nullptr;
+        SDL_GPUSampler *sampler = nullptr;
+        bool failed = false, logged = false;
+    } hdr;
+
     /* A transparent screenshot's frame draws only the characters, over a clear
        picture, so blended edges hold no scene: it is saved, not shown. */
     bool clear_shot = false, clear_shot_next = false;
@@ -3601,6 +3612,161 @@ void blurRelease(RecompD3dPresenter *p)
 }
 
 // The pipeline once, and targets at the main size.
+// ---- HDR output: the SDR frame into an HDR swapchain (hdr in the presenter).
+
+/* The frame's colours are sRGB; below a knee (60% of SDR white, linear) they
+   are shown as they are, at SDR white's brightness, and above it they ease
+   up to the peak (a cubic from the knee), all three channels together so the
+   colour holds: the sun, glare, glints and sheen get the headroom. Extended
+   linear writes linear light with SDR white at 1; HDR10 converts to BT.2020
+   and encodes PQ with SDR white at 203 nits. u.rect: the picture's place in
+   the window (x, y, 1/w, 1/h); u.tone: peak, knee, HDR10 (1) or not. */
+constexpr char kMslHdr[] = R"(#include <metal_stdlib>
+using namespace metal;
+struct VOut { float4 position [[position]]; };
+struct Hdr { float4 rect; float4 tone; };
+vertex VOut vs_main(uint id [[vertex_id]]) {
+    VOut out;
+    float2 p = float2((id << 1) & 2, id & 2);
+    out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    return out;
+}
+fragment float4 ps_main(VOut in [[stage_in]], constant Hdr &u [[buffer(0)]],
+                        texture2d<float> picture [[texture(0)]], sampler smp [[sampler(0)]]) {
+    float2 uv = (in.position.xy - u.rect.xy) * u.rect.zw;
+    float3 c = saturate(picture.sample(smp, uv).rgb);
+    float3 lin = select(pow((c + 0.055) / 1.055, float3(2.4)), c / 12.92, c <= 0.04045);
+    float l = dot(lin, float3(0.2126, 0.7152, 0.0722));
+    float t = saturate((l - u.tone.y) / (1.0 - u.tone.y));
+    lin *= 1.0 + (u.tone.x - 1.0) * t * t * t;
+    if (u.tone.z < 0.5) return float4(lin, 1.0);
+    float3 wide = float3(dot(float3(0.6274, 0.3293, 0.0433), lin), dot(float3(0.0691, 0.9195, 0.0114), lin),
+                         dot(float3(0.0164, 0.0880, 0.8956), lin));
+    float3 y = pow(max(wide, 0.0) * (203.0 / 10000.0), float3(0.1593017578125));
+    return float4(pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), float3(78.84375)), 1.0);
+}
+)";
+
+constexpr char kGlslHdrFragment[] = R"(#version 450
+layout(set = 3, binding = 0, std140) uniform Hdr { vec4 rect; vec4 tone; } u;
+layout(set = 2, binding = 0) uniform sampler2D picture;
+layout(location = 0) out vec4 out_color;
+void main() {
+    vec2 uv = (gl_FragCoord.xy - u.rect.xy) * u.rect.zw;
+    vec3 c = clamp(texture(picture, uv).rgb, 0.0, 1.0);
+    vec3 lin = mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThanEqual(c, vec3(0.04045)));
+    float l = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    float t = clamp((l - u.tone.y) / (1.0 - u.tone.y), 0.0, 1.0);
+    lin *= 1.0 + (u.tone.x - 1.0) * t * t * t;
+    if (u.tone.z < 0.5) { out_color = vec4(lin, 1.0); return; }
+    vec3 wide = vec3(dot(vec3(0.6274, 0.3293, 0.0433), lin), dot(vec3(0.0691, 0.9195, 0.0114), lin),
+                     dot(vec3(0.0164, 0.0880, 0.8956), lin));
+    vec3 y = pow(max(wide, 0.0) * (203.0 / 10000.0), vec3(0.1593017578125));
+    out_color = vec4(pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), vec3(78.84375)), 1.0);
+}
+)";
+
+void hdrRelease(RecompD3dPresenter *p)
+{
+    auto &h = p->hdr;
+    if (h.pipeline) SDL_ReleaseGPUGraphicsPipeline(p->device, h.pipeline);
+    if (h.vertex) SDL_ReleaseGPUShader(p->device, h.vertex);
+    if (h.fragment) SDL_ReleaseGPUShader(p->device, h.fragment);
+    if (h.sampler) SDL_ReleaseGPUSampler(p->device, h.sampler);
+    h.pipeline = nullptr;
+    h.vertex = h.fragment = nullptr;
+    h.sampler = nullptr;
+}
+
+/* Draws `shown` into the HDR swapchain texture at (x, y, w, h); false when
+   the pass cannot be made, and the caller blits as in SDR. */
+bool hdrPresent(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUTexture *shown,
+    SDL_GPUTexture *swapchain, int x, int y, int w, int h)
+{
+    auto &hd = p->hdr;
+    if (hd.failed) return false;
+    if (!hd.pipeline) {
+        const bool msl = !p->use_spirv;
+        SDL_GPUShaderCreateInfo shader{};
+        std::vector<uint32_t> vs_spirv, fs_spirv;
+        if (msl) {
+            shader.code = reinterpret_cast<const Uint8 *>(kMslHdr);
+            shader.code_size = sizeof kMslHdr - 1u;
+            shader.entrypoint = "vs_main";
+            shader.format = SDL_GPU_SHADERFORMAT_MSL;
+        } else {
+            vs_spirv = compileGlslToSpirv(kGlslEffectsVertex, SDL_GPU_SHADERSTAGE_VERTEX);
+            shader.code = reinterpret_cast<const Uint8 *>(vs_spirv.data());
+            shader.code_size = vs_spirv.size() * sizeof(uint32_t);
+            shader.entrypoint = "main";
+            shader.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        }
+        shader.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        if (shader.code_size) hd.vertex = SDL_CreateGPUShader(p->device, &shader);
+        if (msl) {
+            shader.entrypoint = "ps_main";
+        } else {
+            fs_spirv = compileGlslToSpirv(kGlslHdrFragment, SDL_GPU_SHADERSTAGE_FRAGMENT);
+            shader.code = reinterpret_cast<const Uint8 *>(fs_spirv.data());
+            shader.code_size = fs_spirv.size() * sizeof(uint32_t);
+        }
+        shader.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        shader.num_samplers = 1;
+        shader.num_uniform_buffers = 1;
+        if (shader.code_size) hd.fragment = SDL_CreateGPUShader(p->device, &shader);
+        SDL_GPUSamplerCreateInfo sampler{};
+        sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_LINEAR;
+        sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w =
+            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        hd.sampler = SDL_CreateGPUSampler(p->device, &sampler);
+        if (hd.vertex && hd.fragment && hd.sampler) {
+            SDL_GPUGraphicsPipelineCreateInfo pinfo{};
+            pinfo.vertex_shader = hd.vertex;
+            pinfo.fragment_shader = hd.fragment;
+            pinfo.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            pinfo.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+            pinfo.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+            SDL_GPUColorTargetDescription target{};
+            target.format = SDL_GetGPUSwapchainTextureFormat(p->device, p->window);
+            pinfo.target_info.color_target_descriptions = &target;
+            pinfo.target_info.num_color_targets = 1;
+            hd.pipeline = SDL_CreateGPUGraphicsPipeline(p->device, &pinfo);
+        }
+        if (!hd.pipeline) {
+            std::fprintf(stderr, "recomp HDR output: setup failed (%s); shown as SDR\n", SDL_GetError());
+            hdrRelease(p);
+            hd.failed = true;
+            return false;
+        }
+    }
+    // The display's headroom above SDR white (macOS reports it; 1 when unknown).
+    float headroom = SDL_GetFloatProperty(SDL_GetWindowProperties(p->window), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 0.0f);
+    float peak = hd.peak;
+    if (hd.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR && headroom > 1.0f) peak = std::min(peak, headroom);
+    if (!hd.logged) {
+        std::fprintf(stderr, "recomp HDR output: peak %.2fx SDR white (display headroom %.2f)\n", peak, headroom);
+        hd.logged = true;
+    }
+    const float u[8] = {float(x), float(y), 1.0f / float(w), 1.0f / float(h), peak, 0.6f,
+        hd.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084 ? 1.0f : 0.0f, 0.0f};
+    SDL_GPUColorTargetInfo target{};
+    target.texture = swapchain;
+    target.load_op = SDL_GPU_LOADOP_CLEAR;
+    target.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+    target.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &target, 1, nullptr);
+    if (!pass) return false;
+    const SDL_GPUViewport viewport{float(x), float(y), float(w), float(h), 0.0f, 1.0f};
+    SDL_SetGPUViewport(pass, &viewport);
+    SDL_BindGPUGraphicsPipeline(pass, hd.pipeline);
+    SDL_GPUTextureSamplerBinding binding{shown, hd.sampler};
+    SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+    SDL_PushGPUFragmentUniformData(cmdbuf, 0, u, sizeof u);
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+    return true;
+}
+
 bool blurReady(RecompD3dPresenter *p)
 {
     auto &b = p->blur;
@@ -3957,8 +4123,24 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX)) {
         present_mode = SDL_GPU_PRESENTMODE_MAILBOX;
     }
-    SDL_SetGPUSwapchainParameters(
-        device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode);
+    // HDR output when asked for and the window's display can take it:
+    // extended linear (Metal's EDR, Windows' scRGB), else HDR10.
+    SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    if (const char *hdr = std::getenv("RECOMP_D3D_HDR"); hdr && std::strcmp(hdr, "0") != 0 && hdr[0] != '\0') {
+        for (const auto candidate : {SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR,
+                                     SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084}) {
+            if (SDL_WindowSupportsGPUSwapchainComposition(device, window, candidate) &&
+                SDL_SetGPUSwapchainParameters(device, window, candidate, present_mode)) {
+                composition = candidate;
+                break;
+            }
+        }
+        std::fprintf(stderr, "[presenter] HDR output: %s\n",
+            composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR ? "extended linear" :
+            composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084 ? "HDR10" : "not supported by this display; SDR");
+    }
+    if (composition == SDL_GPU_SWAPCHAINCOMPOSITION_SDR)
+        SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode);
 
     uint32_t msaa_count = 1u;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -4175,6 +4357,11 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
     p->window = window;
     p->device = device;
+    p->hdr.composition = composition;
+    if (const char *peak = std::getenv("RECOMP_D3D_HDR_PEAK")) {
+        const float value = std::strtof(peak, nullptr);
+        if (std::isfinite(value)) p->hdr.peak = std::clamp(value, 1.0f, 16.0f);
+    }
     p->backbuffer_color = backbuffer_color;
     p->backbuffer_depth = backbuffer_depth;
     p->backbuffer_resolve = backbuffer_resolve;
@@ -4357,6 +4544,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // A held frame updates the front buffer copy, but the window keeps
         // the last picture presented.
         const bool clear_shot = presenter->clear_shot;
+        // An HDR pass that could not be made: the window goes back to SDR.
+        if (presenter->hdr.failed && presenter->hdr.composition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR) {
+            presenter->hdr.composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+            SDL_SetGPUSwapchainParameters(presenter->device, presenter->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                preferMailbox(immediate_present_setting) &&
+                SDL_WindowSupportsGPUPresentMode(presenter->device, presenter->window, SDL_GPU_PRESENTMODE_MAILBOX)
+                ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC);
+        }
         if (!present.hold && !clear_shot && SDL_WaitAndAcquireGPUSwapchainTexture(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
@@ -4384,7 +4579,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.load_op = SDL_GPU_LOADOP_CLEAR;
                 blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
                 blit.filter = SDL_GPU_FILTER_LINEAR;
-                SDL_BlitGPUTexture(cmdbuf, &blit);
+                // HDR output converts on the way; a pass that cannot be made falls back to the blit.
+                if (presenter->hdr.composition == SDL_GPU_SWAPCHAINCOMPOSITION_SDR ||
+                    !hdrPresent(presenter, cmdbuf, shown, swapchain_tex, dst_x, dst_y, dst_w, dst_h))
+                    SDL_BlitGPUTexture(cmdbuf, &blit);
                 // The runtime's overlay text goes on the window, not the
                 // game's back buffer, which the game reads back as its front
                 // buffer.
@@ -4871,6 +5069,7 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     sunRelease(p);
     effectsRelease(p);
     blurRelease(p);
+    hdrRelease(p);
 
     // Release cached textures
     for (uint32_t i = 0u; i < p->texture_count; ++i) {
@@ -4961,7 +5160,7 @@ void recomp_d3d_presenter_set_immediate_present(bool enabled)
             ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
         SDL_SetGPUSwapchainParameters(
             active_presenter->device, active_presenter->window,
-            SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
+            active_presenter->hdr.composition, mode);
     }
 }
 
