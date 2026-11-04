@@ -367,7 +367,7 @@ the sticks, WASD and the right mouse button still fly.
 | Play path | Right plays the path from its first view, left stops |
 | Record video | On: playing the path records it to an MP4 |
 | Scene speed | Normal, or 1/2, 1/4, 1/8: slow motion |
-| Motion blur | Off, or 4, 8 or 16 pictures averaged into each frame |
+| Motion blur (recorded videos) | Off, or 4, 8 or 16 pictures averaged into each frame, while a path records |
 | Pose | Left steps the characters' poses back, right forward (`,` and `.` on the keyboard) |
 | Move her | Off, On: the sticks (or WASD and the arrows) move and turn the chosen girl instead of flying; A on the row puts her back |
 | Saved pose | Slot 1 to 8, and whose pose it keeps |
@@ -490,7 +490,10 @@ drawn.
 
 Motion blur draws each frame as the average of 4, 8 or 16 pictures, each
 part of the way from one game frame to the next: slow motion's blend, made
-that many times finer (`step_slow_motion`), at normal speed or slowed. A
+that many times finer (`step_slow_motion`), at normal speed or slowed. It
+draws the scene that many times a frame, far too slow to play with, so it
+is only on while a camera path plays with Record video on, where the video
+keeps 60 frames a second however long each takes. A
 Swap marked as picture i of n (`recomp_d3d_frame_adapter_set_blur`) skips the
 display wait unless it is the last; the SDL GPU presenter adds each picture,
 effects included, into a half-float target weighted 1/n and shows, saves or

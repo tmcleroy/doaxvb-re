@@ -38,12 +38,18 @@ enum Item {
     PLAY, QUIT, ITEM_COUNT
 };
 
+// The in-game Graphics menu's amounts and HDR levels (docs/graphics-options.md).
+const char *const kKeptKeys[] = {"sun_soft_amount", "ambient_occlusion_amount", "bloom_amount",
+    "skin_soft_amount", "skin_sheen_amount", "hdr_peak", "hdr_white"};
+
 struct Settings {
     int height = 0;
     int msaa = 1;
     bool sun_shadows = false;
     bool sun_soft = false;
     bool hdr = false;
+    // Values only the in-game Graphics menu sets, kept as they were written.
+    std::string kept[7];
     bool anisotropy = true;
     bool occlusion = false;
     bool bloom = false;
@@ -86,6 +92,8 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "sun_shadows", value)) settings.sun_shadows = value == "true";
     if (jsonValue(text, "sun_soft", value)) settings.sun_soft = value == "true";
     if (jsonValue(text, "hdr", value)) settings.hdr = value == "true";
+    for (int i = 0; i < static_cast<int>(std::size(kKeptKeys)); ++i)
+        if (jsonValue(text, kKeptKeys[i], value)) settings.kept[i] = value;
     if (jsonValue(text, "anisotropy", value)) settings.anisotropy = value != "false";
     if (jsonValue(text, "ambient_occlusion", value)) settings.occlusion = value == "true";
     if (jsonValue(text, "bloom", value)) settings.bloom = value == "true";
@@ -110,7 +118,10 @@ bool saveSettings(const std::string &path, const Settings &settings)
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
          << ",\n  \"smaa\": false,\n  \"sun_shadows\": " << (settings.sun_shadows ? "true" : "false")
          << ",\n  \"sun_soft\": " << (settings.sun_soft ? "true" : "false")
-         << ",\n  \"hdr\": " << (settings.hdr ? "true" : "false")
+         << ",\n  \"hdr\": " << (settings.hdr ? "true" : "false");
+    for (int i = 0; i < static_cast<int>(std::size(kKeptKeys)); ++i)
+        if (!settings.kept[i].empty()) file << ",\n  \"" << kKeptKeys[i] << "\": " << settings.kept[i];
+    file
          << ",\n  \"anisotropy\": " << (settings.anisotropy ? "true" : "false")
          << ",\n  \"ambient_occlusion\": " << (settings.occlusion ? "true" : "false")
          << ",\n  \"bloom\": " << (settings.bloom ? "true" : "false")

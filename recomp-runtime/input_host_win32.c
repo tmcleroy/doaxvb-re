@@ -270,6 +270,7 @@ bool recomp_input_host_key(RecompInputHostKey key)
 {
     switch (key) {
     case RECOMP_INPUT_HOST_KEY_F1: return focused() && pressed(KEY(VK_F1, SDL_SCANCODE_F1));
+    case RECOMP_INPUT_HOST_KEY_F2: return focused() && pressed(KEY(VK_F2, SDL_SCANCODE_F2));
     case RECOMP_INPUT_HOST_KEY_F12: return focused() && pressed(KEY(VK_F12, SDL_SCANCODE_F12));
     case RECOMP_INPUT_HOST_KEY_W: return focused() && pressed(KEY('W', SDL_SCANCODE_W));
     case RECOMP_INPUT_HOST_KEY_A: return focused() && pressed(KEY('A', SDL_SCANCODE_A));

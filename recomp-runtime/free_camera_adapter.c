@@ -9,6 +9,7 @@
 #include "overlay_text.h"
 #include "screenshot.h"
 #include "camera_settings.h"
+#include "graphics_menu.h"
 #include "camera_path.h"
 #include "slow_motion.h"
 #include "viewer_menu_adapter.h"
@@ -399,10 +400,10 @@ void recomp_free_camera_set_source(RecompInputSampleSource source)
 {
     state.source = source;
     /* Off, the free camera leaves the game alone: only the input passes
-       through it. Skin shading still needs the girls' draws marked. */
+       through it. Skin shading, which the Graphics menu can turn on at any
+       time, still needs the girls' draws marked. */
     if (!enabled()) {
-        if (recomp_camera_effects_skin_wanted())
-            recomp_d3d_draw_set_character_test(recomp_actor_pose_character_world);
+        recomp_d3d_draw_set_character_test(recomp_actor_pose_character_world);
         return;
     }
     recomp_scene_freeze_set_frame_hook(sample_while_frozen);
@@ -747,6 +748,39 @@ static bool take_sample(const RecompInputGamepad *raw)
     return state.active || toggle;
 }
 
+/* Whether to show controller hints: once a controller was used, or on a Steam Deck. */
+static bool controller_hints(void)
+{
+    if (state.controller_hints < 0) {
+        const char *deck = getenv("SteamDeck");
+        state.controller_hints = deck != NULL && strcmp(deck, "1") == 0;
+    }
+    return state.controller_hints > 0;
+}
+
+/* The Graphics menu (graphics_menu.h) takes the first port's input before
+   anything else, free camera or not. True while it is open: the game, and
+   the camera, read a neutral pad. Without the free camera nothing else
+   draws the overlay, so the menu publishes it here. */
+static bool take_graphics_menu(const RecompInputGamepad *gamepad)
+{
+    static bool was_open;
+    const bool open = recomp_graphics_menu_input(gamepad);
+    if (open) {
+        /* Back went to the menu (Back + Start), not to the camera settings. */
+        state.back_combo = true;
+        if (gamepad != NULL && (gamepad->buttons & ~(uint16_t)XBOX_BACK) != 0u) state.controller_hints = 1;
+    }
+    if (!enabled() && (open || was_open)) {
+        RecompOverlayText text;
+        recomp_overlay_clear(&text);
+        if (open) recomp_graphics_menu_fill(&text, controller_hints());
+        recomp_overlay_publish(&text);
+    }
+    was_open = open;
+    return open;
+}
+
 bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad)
 {
     bool present = false;
@@ -754,6 +788,10 @@ bool recomp_free_camera_sample(uint32_t port, RecompInputGamepad *gamepad)
     if (gamepad == NULL) return false;
     memset(gamepad, 0, sizeof *gamepad);
     if (state.source != NULL) present = state.source(port, gamepad);
+    if (port == 0u && take_graphics_menu(gamepad)) {
+        memset(gamepad, 0, sizeof *gamepad);
+        return present;
+    }
     if (port != 0u || !enabled()) return present;
     if (take_sample(gamepad)) memset(gamepad, 0, sizeof *gamepad);
     else recomp_viewer_input(gamepad);
@@ -767,6 +805,7 @@ static void sample_while_frozen(uint32_t frame)
     RecompInputGamepad gamepad;
     memset(&gamepad, 0, sizeof gamepad);
     if (state.source != NULL) state.source(0u, &gamepad);
+    if (take_graphics_menu(&gamepad)) return;
     take_sample(&gamepad);
 }
 
@@ -1295,8 +1334,7 @@ static void frame_started(void)
 
 RecompFunction recomp_free_camera_lookup_manual(uint32_t guest_address)
 {
-    if (!enabled())
-        return recomp_camera_effects_skin_wanted() ? recomp_actor_pose_lookup_character(guest_address) : NULL;
+    if (!enabled()) return recomp_actor_pose_lookup_character(guest_address);
     if (guest_address == BUILD_CAMERA) return build_camera;
     return recomp_actor_pose_lookup_manual(guest_address);
 }
@@ -1331,6 +1369,11 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     const char *shot = texture_keys() ? "Shift+F12" : "F12";
     char hint[RECOMP_OVERLAY_HINT_SIZE];
     recomp_overlay_clear(text);
+    /* The Graphics menu shows over everything, clean view or not. */
+    if (recomp_graphics_menu_open()) {
+        recomp_graphics_menu_fill(text, controller_hints());
+        return;
+    }
     if (state.panel_hidden) return;
     if (!state.active) {
         if (!recomp_scene_freeze_active()) return;
@@ -1452,8 +1495,12 @@ static void step_slow_motion(void)
 {
     const bool smooth = recomp_game_requested_hz() == 0u;
     /* Motion blur shows the average of `blur` pictures a frame, each part of
-       the way on: slow motion's blend, `blur` times finer. */
-    unsigned blur = state.active && state.settings_ready && smooth && state.settings.motion_blur != 0u ?
+       the way on: slow motion's blend, `blur` times finer. It draws the
+       scene that many times a frame, too slow to play with, so it is only
+       for recorded videos: while a path plays with Record video on (the
+       video keeps 60 frames a second however long each takes). */
+    const bool recording = state.playing && state.settings.record;
+    unsigned blur = state.active && state.settings_ready && smooth && recording && state.settings.motion_blur != 0u ?
         2u << state.settings.motion_blur : 1u;
     const unsigned every = (state.active && state.settings_ready ? 1u << state.settings.slow : 1u) * blur;
     state.blur = blur;

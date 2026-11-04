@@ -3,6 +3,7 @@
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
 #include "camera_effects.h"
+#include "graphics_options.h"
 #include "overlay_d3d11.h"
 #include "screenshot.h"
 #include "texture_replacement.h"
@@ -609,8 +610,8 @@ struct RecompD3dPresenter {
     ID3D11PixelShader *gamma_pixel_shader = nullptr;
     ID3D11Buffer *gamma_buffer = nullptr;
     bool gamma_enabled = false;
-    // 16x anisotropic filtering on mipmapped scene textures; RECOMP_D3D_ANISOTROPY=0 turns it off.
-    bool anisotropy = true;
+    // The graphics options (graphics_options.h), taken each present.
+    RecompGraphicsOptions options{};
     ID3D11Texture2D *back_buffer_copy = nullptr;
     ID3D11ShaderResourceView *back_buffer_sample = nullptr;
     ID3D11VertexShader *target_copy_vs = nullptr;
@@ -1718,15 +1719,12 @@ bool pixelLightingEnabled()
     return enabled;
 }
 
-/* Skin shading on the girls (camera_effects.h): the launcher's soft and sheen
-   amounts, read once; both 0 leaves the shaders as they were. */
-bool skinEnabled(float *soft = nullptr, float *sheen = nullptr)
+/* Skin shading on the girls (graphics_options.h): the in-game Graphics menu
+   can turn it on at any time, so every lit draw shader carries it and a
+   per-draw constant (skin.w) chooses. */
+bool skinEnabled()
 {
-    static float kept_soft = -1.0f, kept_sheen = 0.0f;
-    if (kept_soft < 0.0f) recomp_camera_effects_skin(&kept_soft, &kept_sheen);
-    if (soft != nullptr) *soft = kept_soft;
-    if (sheen != nullptr) *sheen = kept_sheen;
-    return kept_soft > 0.0f || kept_sheen > 0.0f;
+    return true;
 }
 
 /* Skin shading in a lit draw's pixel shader, as the SDL GPU presenter does it
@@ -1768,7 +1766,7 @@ bool skinShaderSource(std::string &source)
         "        float lobes = 0.7f * pow(ndh, 48) + 0.3f * pow(ndh, 12);\n"
         "        sheen += atten * directional_colors[i].rgb * (lobes * fresnel * saturate(ndl * 4));\n"
         "    }\n"
-        "    sheen *= 6 * skin.y * k;\n"
+        "    sheen *= 4 * skin.y * k;\n"
         "    return saturate(rgb);\n"
         "}\n";
     const auto pixel = source.find("float4 ps_main(VSOut input) : SV_TARGET {");
@@ -3334,8 +3332,8 @@ RecompD3dPresenterError submitDraw(
         camera_flags[0] = draw.character && !draw.target.offscreen ? 1.0f : 0.0f;
         for (unsigned c = 0; c < 3u; ++c) camera_flags[1 + c] = unlit_tint[c];
         // Skin shading: the girls' lit, opaque, textured draws (skinShaderSource).
-        float soft = 0.0f, sheen = 0.0f;
-        if (skinEnabled(&soft, &sheen) && draw.character && !draw.target.offscreen && draw.directional.enabled &&
+        const float soft = presenter->options.skin_soft, sheen = presenter->options.skin_sheen;
+        if ((soft > 0.0f || sheen > 0.0f) && draw.character && !draw.target.offscreen && draw.directional.enabled &&
             !draw.program_count && draw.has_texture && !draw.blend.blend_enable && !draw.has_reflection &&
             !draw.has_combiner && !draw.four_tap_filter && !presenter->sun.casting) {
             const float *m = draw.view_projection;
@@ -3523,7 +3521,7 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
-    const bool anisotropic = presenter->anisotropy && draw.linear_mip_filter && draw.has_texture &&
+    const bool anisotropic = presenter->options.anisotropy && draw.linear_mip_filter && draw.has_texture &&
         draw.texture.mip_levels > 1u &&
         !layout.pretransformed && !draw.texture.linear &&
         !draw.texture.render_target && !draw.texture_is_backbuffer &&
@@ -3609,7 +3607,7 @@ RecompD3dPresenterError submitDraw(
         constants[19] = lit_model ? 1.0f : 0.0f;
         std::memcpy(constants + 20, draw.world[0], sizeof draw.world[0]);
         for (unsigned i = 0; i < 3; ++i) constants[36 + i] = -sun.direction[i];
-        constants[39] = sunSoftness();
+        constants[39] = sunSoftness(presenter->options.sun_soft);
         if (!uploadBuffer(presenter, sun.constants, constants, sizeof constants)) {
             sun.valid = false;
             return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -4894,8 +4892,7 @@ RecompD3dPresenterError d3d11_backend_create(
     created->widescreen = widescreen == nullptr || std::strcmp(widescreen, "0") != 0;
     const char *performance = std::getenv("RECOMP_PERF_COUNTER");
     created->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
-    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY"))
-        created->anisotropy = std::strcmp(anisotropy, "0") != 0;
+    recomp_graphics_options_get(&created->options);
     if (const char *scale = std::getenv("RECOMP_D3D_SCALE")) {
         const float value = static_cast<float>(std::atof(scale));
         if (std::isfinite(value)) created->scale = std::clamp(value, 1.0f, 8.0f);
@@ -4907,10 +4904,8 @@ RecompD3dPresenterError d3d11_backend_create(
     created->gbuffer.enabled = gbufferRequested();
     {
         // The free camera's view depth rides on the draw shaders (d3d_presenter_d3d11_camera.h);
-        // the launcher's ambient occlusion needs it too.
-        const char *free_camera = std::getenv("RECOMP_FREE_CAMERA");
-        g_d3d11_camera_depth = ((free_camera != nullptr && free_camera[0] != '\0' && std::strcmp(free_camera, "0") != 0) ||
-            recomp_camera_effects_always_wanted()) && !created->gbuffer.enabled;
+        // ambient occlusion needs it too, and the Graphics menu can turn that on at any time.
+        g_d3d11_camera_depth = !created->gbuffer.enabled;
     }
     if (created->gbuffer.enabled) {
         const char *view = std::getenv("RECOMP_D3D_GBUFFER_VIEW");
@@ -5345,6 +5340,8 @@ RecompD3dPresenterError d3d11_backend_submit(
         return submitClear(presenter, clear);
     }
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
+        // The in-game Graphics menu's changes take effect from the next frame.
+        recomp_graphics_options_get(&presenter->options);
         presenter->sun.valid = false;
         presenter->sun.triangles = presenter->sun.epoch = 0;
         return submitPresent(presenter, command->data.present);

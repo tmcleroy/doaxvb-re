@@ -6,6 +6,7 @@
 #include "d3d_texture_model.h"
 #include "d3d_vertex_program.h"
 #include "camera_effects.h"
+#include "graphics_options.h"
 #include "camera_effects_shader.h"
 #include "video_sound.h"
 
@@ -577,6 +578,10 @@ struct RecompD3dPresenter {
     bool anisotropy = true;
     // Skin shading on the girls (camera_effects.h), 0 to 1 each; both 0 is off.
     float skin_soft = 0.0f, skin_sheen = 0.0f;
+    // Soft sun shadows' size in the shaders' units (sunSoftness); 0 is off.
+    float sun_softness = 0.0f;
+    // The graphics options this presenter last took (refreshOptions).
+    uint32_t options_seen = UINT32_MAX;
 
     // Persistent dynamic ring buffers
     SDL_GPUBuffer *draw_vertex_buffer = nullptr;
@@ -692,6 +697,7 @@ struct RecompD3dPresenter {
     struct {
         SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
         float peak = 4.0f;  // the brightest highlight, in multiples of SDR white
+        float white = 203.0f;  // SDR white in nits, where the display needs one
         SDL_GPUShader *vertex = nullptr, *fragment = nullptr;
         SDL_GPUGraphicsPipeline *pipeline = nullptr;
         SDL_GPUSampler *sampler = nullptr;
@@ -1232,7 +1238,7 @@ std::string skinSource(bool msl)
     s += "        float lobes = 0.7 * pow(ndh, 48.0) + 0.3 * pow(ndh, 12.0);\n";
     s += "        sheen += u.directional_colors[i].rgb * (lobes * fresnel * clamp(ndl * 4.0, 0.0, 1.0));\n";
     s += "    }\n";
-    s += "    sheen *= 6.0 * u.skin.y * skin;\n";
+    s += "    sheen *= 4.0 * u.skin.y * skin;\n";
     s += "    return clamp(rgb, 0.0, 1.0);\n";
     s += "}\n";
     return s;
@@ -2887,7 +2893,7 @@ void sunObserveDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawC
     block[17] = sun.game_alpha;
     block[19] = lit_model ? 1.0f : 0.0f;
     for (unsigned i = 0; i < 3; ++i) block[20 + i] = -sun.map_direction[i];
-    block[23] = sunSoftness();
+    block[23] = presenter->sun_softness;
     std::memcpy(block + 24, draw.world, sizeof draw.world);
 }
 
@@ -3618,9 +3624,11 @@ void blurRelease(RecompD3dPresenter *p)
    are shown as they are, at SDR white's brightness, and above it they ease
    up to the peak (a cubic from the knee), all three channels together so the
    colour holds: the sun, glare, glints and sheen get the headroom. Extended
-   linear writes linear light with SDR white at 1; HDR10 converts to BT.2020
-   and encodes PQ with SDR white at 203 nits. u.rect: the picture's place in
-   the window (x, y, 1/w, 1/h); u.tone: peak, knee, HDR10 (1) or not. */
+   linear writes linear light with SDR white at u.tone.w (1 on macOS, where
+   EDR's 1 is SDR white; white / 80 nits elsewhere); HDR10 converts to
+   BT.2020 and encodes PQ with SDR white at u.tone.w nits. u.rect: the
+   picture's place in the window (x, y, 1/w, 1/h); u.tone: peak, knee, HDR10
+   (1) or not, SDR white. */
 constexpr char kMslHdr[] = R"(#include <metal_stdlib>
 using namespace metal;
 struct VOut { float4 position [[position]]; };
@@ -3639,10 +3647,10 @@ fragment float4 ps_main(VOut in [[stage_in]], constant Hdr &u [[buffer(0)]],
     float l = dot(lin, float3(0.2126, 0.7152, 0.0722));
     float t = saturate((l - u.tone.y) / (1.0 - u.tone.y));
     lin *= 1.0 + (u.tone.x - 1.0) * t * t * t;
-    if (u.tone.z < 0.5) return float4(lin, 1.0);
+    if (u.tone.z < 0.5) return float4(lin * u.tone.w, 1.0);
     float3 wide = float3(dot(float3(0.6274, 0.3293, 0.0433), lin), dot(float3(0.0691, 0.9195, 0.0114), lin),
                          dot(float3(0.0164, 0.0880, 0.8956), lin));
-    float3 y = pow(max(wide, 0.0) * (203.0 / 10000.0), float3(0.1593017578125));
+    float3 y = pow(max(wide, 0.0) * (u.tone.w / 10000.0), float3(0.1593017578125));
     return float4(pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), float3(78.84375)), 1.0);
 }
 )";
@@ -3658,10 +3666,10 @@ void main() {
     float l = dot(lin, vec3(0.2126, 0.7152, 0.0722));
     float t = clamp((l - u.tone.y) / (1.0 - u.tone.y), 0.0, 1.0);
     lin *= 1.0 + (u.tone.x - 1.0) * t * t * t;
-    if (u.tone.z < 0.5) { out_color = vec4(lin, 1.0); return; }
+    if (u.tone.z < 0.5) { out_color = vec4(lin * u.tone.w, 1.0); return; }
     vec3 wide = vec3(dot(vec3(0.6274, 0.3293, 0.0433), lin), dot(vec3(0.0691, 0.9195, 0.0114), lin),
                      dot(vec3(0.0164, 0.0880, 0.8956), lin));
-    vec3 y = pow(max(wide, 0.0) * (203.0 / 10000.0), vec3(0.1593017578125));
+    vec3 y = pow(max(wide, 0.0) * (u.tone.w / 10000.0), vec3(0.1593017578125));
     out_color = vec4(pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), vec3(78.84375)), 1.0);
 }
 )";
@@ -3744,11 +3752,18 @@ bool hdrPresent(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUText
     float peak = hd.peak;
     if (hd.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR && headroom > 1.0f) peak = std::min(peak, headroom);
     if (!hd.logged) {
-        std::fprintf(stderr, "recomp HDR output: peak %.2fx SDR white (display headroom %.2f)\n", peak, headroom);
+        std::fprintf(stderr, "recomp HDR output: peak %.2fx SDR white, SDR white %.0f nits (display headroom %.2f)\n",
+            peak, hd.white, headroom);
         hd.logged = true;
     }
+    const bool hdr10 = hd.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084;
+#ifdef __APPLE__
+    const float linear_white = 1.0f;
+#else
+    const float linear_white = hd.white / 80.0f;
+#endif
     const float u[8] = {float(x), float(y), 1.0f / float(w), 1.0f / float(h), peak, 0.6f,
-        hd.composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084 ? 1.0f : 0.0f, 0.0f};
+        hdr10 ? 1.0f : 0.0f, hdr10 ? hd.white : linear_white};
     SDL_GPUColorTargetInfo target{};
     target.texture = swapchain;
     target.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -3765,6 +3780,72 @@ bool hdrPresent(RecompD3dPresenter *p, SDL_GPUCommandBuffer *cmdbuf, SDL_GPUText
     SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
     return true;
+}
+
+/* The window's swapchain composition for HDR on or off: extended linear
+   first on macOS (EDR: 1 is SDR white), HDR10 first elsewhere (gamescope
+   and Windows composite HDR10 natively; their extended linear puts 1 at 80
+   nits). The HDR pass is made again for the new format. */
+void hdrApply(RecompD3dPresenter *p, bool on)
+{
+    auto &h = p->hdr;
+    const SDL_GPUPresentMode mode = preferMailbox(immediate_present_setting) &&
+        SDL_WindowSupportsGPUPresentMode(p->device, p->window, SDL_GPU_PRESENTMODE_MAILBOX)
+        ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
+    SDL_GPUSwapchainComposition chosen = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    if (on && !h.failed) {
+#ifdef __APPLE__
+        const SDL_GPUSwapchainComposition order[2] = {SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR,
+                                                      SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084};
+#else
+        const SDL_GPUSwapchainComposition order[2] = {SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084,
+                                                      SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR};
+#endif
+        for (const auto candidate : order) {
+            if (SDL_WindowSupportsGPUSwapchainComposition(p->device, p->window, candidate) &&
+                SDL_SetGPUSwapchainParameters(p->device, p->window, candidate, mode)) {
+                chosen = candidate;
+                break;
+            }
+        }
+    }
+    if (chosen == SDL_GPU_SWAPCHAINCOMPOSITION_SDR)
+        SDL_SetGPUSwapchainParameters(p->device, p->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
+    if (chosen != h.composition) hdrRelease(p);
+    h.composition = chosen;
+    h.logged = false;
+    if (on)
+        std::fprintf(stderr, "[presenter] HDR output: %s\n",
+            chosen == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR ? "extended linear" :
+            chosen == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084 ? "HDR10" :
+            h.failed ? "could not be set up; SDR" : "not supported by this display; SDR");
+}
+
+/* Once a present: the graphics options (graphics_options.h), from the
+   launcher at the start and the in-game Graphics menu after. */
+void refreshOptions(RecompD3dPresenter *p)
+{
+    const uint32_t changes = recomp_graphics_options_changes();
+    const bool hdr_failed_now = p->hdr.failed && p->hdr.composition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    if (changes == p->options_seen && !hdr_failed_now) return;
+    const bool first = p->options_seen == UINT32_MAX;
+    p->options_seen = changes;
+    RecompGraphicsOptions options;
+    recomp_graphics_options_get(&options);
+    p->anisotropy = options.anisotropy;
+    p->skin_soft = options.skin_soft;
+    p->skin_sheen = options.skin_sheen;
+    p->sun_softness = sunSoftness(options.sun_soft);
+    p->hdr.peak = options.hdr_peak;
+    p->hdr.white = options.hdr_white;
+    const bool hdr_now = p->hdr.composition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    if (hdr_failed_now) hdrApply(p, false);
+    else if (options.hdr != hdr_now || (first && options.hdr)) hdrApply(p, options.hdr);
+    // Occlusion or bloom turned on for the first time: the effects pass and its view depth.
+    if (!p->effects.enabled && (options.occlusion > 0.0f || options.bloom > 0.0f)) {
+        effectsCreate(p);
+        std::fprintf(stderr, "recomp graphics: effects pass %s\n", p->effects.enabled ? "started" : "unavailable");
+    }
 }
 
 bool blurReady(RecompD3dPresenter *p)
@@ -4123,24 +4204,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX)) {
         present_mode = SDL_GPU_PRESENTMODE_MAILBOX;
     }
-    // HDR output when asked for and the window's display can take it:
-    // extended linear (Metal's EDR, Windows' scRGB), else HDR10.
-    SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-    if (const char *hdr = std::getenv("RECOMP_D3D_HDR"); hdr && std::strcmp(hdr, "0") != 0 && hdr[0] != '\0') {
-        for (const auto candidate : {SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR,
-                                     SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084}) {
-            if (SDL_WindowSupportsGPUSwapchainComposition(device, window, candidate) &&
-                SDL_SetGPUSwapchainParameters(device, window, candidate, present_mode)) {
-                composition = candidate;
-                break;
-            }
-        }
-        std::fprintf(stderr, "[presenter] HDR output: %s\n",
-            composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR ? "extended linear" :
-            composition == SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084 ? "HDR10" : "not supported by this display; SDR");
-    }
-    if (composition == SDL_GPU_SWAPCHAINCOMPOSITION_SDR)
-        SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode);
+    SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode);
+    // HDR output starts with the first present (refreshOptions).
+    const SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
 
     uint32_t msaa_count = 1u;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -4358,10 +4424,6 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->window = window;
     p->device = device;
     p->hdr.composition = composition;
-    if (const char *peak = std::getenv("RECOMP_D3D_HDR_PEAK")) {
-        const float value = std::strtof(peak, nullptr);
-        if (std::isfinite(value)) p->hdr.peak = std::clamp(value, 1.0f, 16.0f);
-    }
     p->backbuffer_color = backbuffer_color;
     p->backbuffer_depth = backbuffer_depth;
     p->backbuffer_resolve = backbuffer_resolve;
@@ -4381,8 +4443,16 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
 
     std::fprintf(stderr, "[presenter] initialized scale=%.2f resolution=%ux%u window=%ux%u widescreen=%d msaa=%ux\n",
         scale, main_w, main_h, win_w, win_h, widescreen ? 1 : 0, msaa_count);
-    if (const char *anisotropy = std::getenv("RECOMP_D3D_ANISOTROPY")) p->anisotropy = std::strcmp(anisotropy, "0") != 0;
-    recomp_camera_effects_skin(&p->skin_soft, &p->skin_sheen);
+    {
+        RecompGraphicsOptions options;
+        recomp_graphics_options_get(&options);
+        p->anisotropy = options.anisotropy;
+        p->skin_soft = options.skin_soft;
+        p->skin_sheen = options.skin_sheen;
+        p->sun_softness = sunSoftness(options.sun_soft);
+        p->hdr.peak = options.hdr_peak;
+        p->hdr.white = options.hdr_white;
+    }
     // Before the boot shaders: whether shadows are on decides their sun block.
     if (sunShadowRequested()) sunCreate(p);
     // Camera effects come with the free camera, or the launcher's always-on ones.
@@ -4515,6 +4585,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         if (present.effective_flags != 5u || present.swap_counter == 0u) {
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         }
+        // The in-game Graphics menu's changes take effect from this frame.
+        refreshOptions(presenter);
 
         flushSegment(presenter);
         if (presenter->sun.enabled) sunRenderMap(presenter, getCommandBuffer(presenter));
@@ -4544,14 +4616,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         // A held frame updates the front buffer copy, but the window keeps
         // the last picture presented.
         const bool clear_shot = presenter->clear_shot;
-        // An HDR pass that could not be made: the window goes back to SDR.
-        if (presenter->hdr.failed && presenter->hdr.composition != SDL_GPU_SWAPCHAINCOMPOSITION_SDR) {
-            presenter->hdr.composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-            SDL_SetGPUSwapchainParameters(presenter->device, presenter->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-                preferMailbox(immediate_present_setting) &&
-                SDL_WindowSupportsGPUPresentMode(presenter->device, presenter->window, SDL_GPU_PRESENTMODE_MAILBOX)
-                ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC);
-        }
         if (!present.hold && !clear_shot && SDL_WaitAndAcquireGPUSwapchainTexture(
                 cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {

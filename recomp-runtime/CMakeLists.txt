@@ -391,6 +391,8 @@ add_executable(recomp_runtime_test
     stage_lights_adapter.c
     time_of_day.c
     camera_effects.c
+    graphics_options.c
+    graphics_menu.c
     ohci_model.c
     ohci_model_test.c
     apu_model.c
@@ -730,6 +732,8 @@ if(RECOMP_PROGRAM_DIR)
         suit_switch_adapter.c
         overlay_text.c
         camera_effects.c
+        graphics_options.c
+        graphics_menu.c
         camera_settings.c
         camera_store.c
         pose_library.c
@@ -886,7 +890,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_d3d11_test PRIVATE
         d3d11 d3dcompiler dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_d3d11_test)
-    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
+    target_sources(recomp_d3d_presenter_d3d11_test PRIVATE overlay_text.c camera_effects.c graphics_options.c audio_capture.c)
     add_executable(recomp_d3d_presenter_thread_test
         d3d_presenter_thread_test.cpp
         ../xbe/sha.cpp
@@ -911,7 +915,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter_thread_test PRIVATE
         d3d11 d3dcompiler dwmapi dxgi user32 windowscodecs ole32 bcrypt)
     recomp_use_overlay(recomp_d3d_presenter_thread_test)
-    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
+    target_sources(recomp_d3d_presenter_thread_test PRIVATE overlay_text.c camera_effects.c graphics_options.c audio_capture.c)
     add_executable(recomp_d3d_presenter_replay_test
         d3d_presenter_replay_test.cpp d3d_presenter_capture.cpp d3d_pose_replay.c
         d3d_split_pose.c animation_visual.c animation_camera.c animation_pose.c
@@ -938,7 +942,7 @@ else()
         d3d_texture_model.c)
     recomp_use_sdl3(recomp_d3d_presenter_sdl_gpu_test)
     recomp_use_overlay(recomp_d3d_presenter_sdl_gpu_test)
-    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c camera_effects.c audio_capture.c)
+    target_sources(recomp_d3d_presenter_sdl_gpu_test PRIVATE overlay_text.c camera_effects.c graphics_options.c audio_capture.c)
     add_executable(recomp_audio_output_sdl_test audio_output_sdl.cpp audio_output_sdl_test.cpp audio_capture.c)
     recomp_use_sdl3(recomp_audio_output_sdl_test)
     add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
@@ -984,9 +988,11 @@ add_executable(recomp_free_camera_test free_camera.c camera_path.c free_camera_t
 add_executable(recomp_scene_freeze_test scene_freeze.c scene_freeze_test.c)
 add_executable(recomp_actor_pose_test actor_pose.c actor_pose_test.c)
 add_executable(recomp_overlay_text_test overlay_text.c overlay_text_test.c)
-add_executable(recomp_camera_effects_test camera_effects.c camera_settings.c camera_effects_test.c)
-add_executable(recomp_camera_effects_always_test camera_effects.c camera_effects_always_test.c)
-add_executable(recomp_camera_store_test camera_store.c camera_settings.c camera_path.c camera_effects.c camera_store_test.c)
+add_executable(recomp_camera_effects_test camera_effects.c graphics_options.c camera_settings.c camera_effects_test.c)
+add_executable(recomp_camera_effects_always_test camera_effects.c graphics_options.c camera_effects_always_test.c)
+add_executable(recomp_graphics_options_test graphics_options.c graphics_options_test.c)
+add_executable(recomp_graphics_menu_test graphics_options.c graphics_menu.c overlay_text.c graphics_menu_test.c)
+add_executable(recomp_camera_store_test camera_store.c camera_settings.c camera_path.c camera_effects.c graphics_options.c camera_store_test.c)
 add_executable(recomp_pose_library_test pose_library.c pose_library_test.c)
 add_executable(recomp_stage_lights_test stage_lights.c time_of_day.c stage_lights_test.c)
 add_executable(recomp_screenshot_test screenshot.c screenshot_test.c)
@@ -1005,6 +1011,8 @@ if(NOT MSVC)
     target_link_libraries(recomp_free_camera_test PRIVATE m)
     target_link_libraries(recomp_camera_effects_test PRIVATE m)
     target_link_libraries(recomp_camera_effects_always_test PRIVATE m)
+    target_link_libraries(recomp_graphics_options_test PRIVATE m)
+    target_link_libraries(recomp_graphics_menu_test PRIVATE m)
     target_link_libraries(recomp_camera_store_test PRIVATE m)
     target_link_libraries(recomp_pose_library_test PRIVATE m)
     target_link_libraries(recomp_stage_lights_test PRIVATE m)
@@ -1039,6 +1047,8 @@ add_test(NAME recomp-runtime-scene-freeze COMMAND recomp_scene_freeze_test)
 add_test(NAME recomp-runtime-actor-pose COMMAND recomp_actor_pose_test)
 add_test(NAME recomp-runtime-overlay-text COMMAND recomp_overlay_text_test)
 add_test(NAME recomp-runtime-camera-effects COMMAND recomp_camera_effects_test)
+add_test(NAME recomp-runtime-graphics-options COMMAND recomp_graphics_options_test)
+add_test(NAME recomp-runtime-graphics-menu COMMAND recomp_graphics_menu_test)
 add_test(NAME recomp-runtime-camera-effects-always COMMAND recomp_camera_effects_always_test)
 set_tests_properties(recomp-runtime-camera-effects-always PROPERTIES
     ENVIRONMENT "RECOMP_D3D_OCCLUSION=0.5;RECOMP_D3D_BLOOM=0.3")

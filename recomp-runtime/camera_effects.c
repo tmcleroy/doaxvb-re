@@ -1,4 +1,5 @@
 #include "camera_effects.h"
+#include "graphics_options.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -113,46 +114,22 @@ void recomp_camera_effects_publish(const RecompCameraEffects *effects)
     unlock();
 }
 
-/* A launcher amount, 0 to 1 (a missing or unreadable one is 0). */
-static float launcher_amount(const char *name)
-{
-    const char *text = getenv(name);
-    const float value = text != NULL ? strtof(text, NULL) : 0.0f;
-    return value > 0.0f ? (value < 1.0f ? value : 1.0f) : 0.0f;
-}
-
+/* The launcher's options, as the in-game Graphics menu last left them
+   (graphics_options.h). */
 void recomp_camera_effects_always(float *occlusion, float *bloom)
 {
-    /* Read once: the environment is set before the runner starts. */
-    static int read;
-    static float kept_occlusion, kept_bloom;
-    if (!read) {
-        kept_occlusion = launcher_amount("RECOMP_D3D_OCCLUSION");
-        kept_bloom = launcher_amount("RECOMP_D3D_BLOOM");
-        read = 1;
-    }
-    if (occlusion != NULL) *occlusion = kept_occlusion;
-    if (bloom != NULL) *bloom = kept_bloom;
+    RecompGraphicsOptions options;
+    recomp_graphics_options_get(&options);
+    if (occlusion != NULL) *occlusion = options.occlusion;
+    if (bloom != NULL) *bloom = options.bloom;
 }
 
 void recomp_camera_effects_skin(float *soft, float *sheen)
 {
-    static int read;
-    static float kept_soft, kept_sheen;
-    if (!read) {
-        kept_soft = launcher_amount("RECOMP_D3D_SKIN_SOFT");
-        kept_sheen = launcher_amount("RECOMP_D3D_SKIN_SHEEN");
-        read = 1;
-    }
-    if (soft != NULL) *soft = kept_soft;
-    if (sheen != NULL) *sheen = kept_sheen;
-}
-
-bool recomp_camera_effects_skin_wanted(void)
-{
-    float soft, sheen;
-    recomp_camera_effects_skin(&soft, &sheen);
-    return soft > 0.0f || sheen > 0.0f;
+    RecompGraphicsOptions options;
+    recomp_graphics_options_get(&options);
+    if (soft != NULL) *soft = options.skin_soft;
+    if (sheen != NULL) *sheen = options.skin_sheen;
 }
 
 bool recomp_camera_effects_always_wanted(void)

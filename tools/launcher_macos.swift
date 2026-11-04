@@ -137,7 +137,9 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func play() {
-        let chosen: [String: Any] = [
+        // Keys this window does not show (the in-game Graphics menu's amounts) are kept.
+        var chosen: [String: Any] = settings
+        let shown: [String: Any] = [
             "height": heights[resolution.indexOfSelectedItem],
             "msaa": samples[msaa.indexOfSelectedItem],
             "smaa": false,
@@ -156,6 +158,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "skin_sheen": skinSheen.state == .on,
             "title_idle": idleValues[idle.indexOfSelectedItem],
         ]
+        for (key, value) in shown { chosen[key] = value }
         do {
             try FileManager.default.createDirectory(
                 at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)

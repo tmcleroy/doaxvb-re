@@ -13,7 +13,10 @@
   sheen** (a soft highlight), and **Soft sun shadows** (with Sun shadows on,
   edges soften with distance from what casts them), and **HDR output** on
   macOS and Linux (highlights such as the sun and sea glints use an HDR
-  display's headroom). See `docs/graphics-options.md`.
+  display's headroom). An in-game **Graphics** menu (F2, or Back + Start)
+  changes them while playing, with percentages, and saves them back to the
+  launcher's settings. See `docs/graphics-options.md`. The free camera's
+  motion blur now applies only to recorded videos.
 - **Sun shadows on macOS and Linux.** The **Sun shadows** launcher option
   (`RECOMP_D3D_SUN_SHADOW=1`) now works on the Metal and Vulkan presenter as
   well. It uses the same selection, casters, receivers and overlay rules as

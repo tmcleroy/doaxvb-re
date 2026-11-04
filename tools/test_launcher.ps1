@@ -70,7 +70,7 @@ try {
         'OK'
     } @{ RECOMP_D3D_SCALE = '2.25'; RECOMP_D3D_MSAA = '8'; RECOMP_D3D_SMAA = '1'; RECOMP_AUDIO_GAIN = '0.75'; RECOMP_MUSIC_SHUFFLE = '1'; RECOMP_D3D_VRR = '1'; RECOMP_D3D_FOG = '0'; RECOMP_TEXTURES = $pack; RECOMP_TEXTURE_DUMP = '1'; RECOMP_D3D_PIXEL_LIGHTING = '1'; RECOMP_D3D_SMOOTH_NORMALS = '1'; RECOMP_D3D_RTGI = '1'; RECOMP_D3D_RTGI_STRENGTH = '1.25'; RECOMP_D3D_RTGI_HITCOLOR = '0'
         RECOMP_D3D_SUN_SHADOW = '1'; RECOMP_TITLE_IDLE = 'cpu-exhibition'; RECOMP_UNLOCK_SWIMSUITS = '1'; RECOMP_DEMO_CUT_HOLD = '12'; RECOMP_FREE_CAMERA = '1'
-        RECOMP_D3D_ANISOTROPY = '0'; RECOMP_D3D_OCCLUSION = '0.5'; RECOMP_D3D_BLOOM = '0.3'; RECOMP_D3D_SKIN_SOFT = '1'; RECOMP_D3D_SKIN_SHEEN = '1'; RECOMP_D3D_SUN_SOFT = '1' }
+        RECOMP_D3D_ANISOTROPY = '0'; RECOMP_D3D_OCCLUSION = '0.5'; RECOMP_D3D_BLOOM = '0.3'; RECOMP_D3D_SKIN_SOFT = '1'; RECOMP_D3D_SKIN_SHEEN = '0.5'; RECOMP_D3D_SUN_SOFT = '1' }
     Check-Launch $all {
         $rtgi.Checked = $false; $vrr.Checked = $false; $fog.Checked = $true; $textures.Checked = $false
         $textureDump.Checked = $false; $pixelLighting.Checked = $false; $smoothNormals.Checked = $false

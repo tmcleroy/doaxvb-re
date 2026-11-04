@@ -145,12 +145,21 @@ class ExtractionTests(unittest.TestCase):
             for saved, expected in (({}, ("1", "0", "0", "0", "0", "0", "0")),
                                     ({"anisotropy": False, "ambient_occlusion": True, "bloom": True,
                                       "skin_soft": True, "skin_sheen": True, "sun_soft": True, "hdr": True},
-                                     ("0", "0.5", "0.3", "1", "1", "1", "1")),
+                                     ("0", "0.5", "0.3", "1", "0.5", "1", "1")),
+                                    # The in-game menu's amounts; an option off ignores its amount.
+                                    ({"ambient_occlusion": True, "ambient_occlusion_amount": 0.75,
+                                      "skin_sheen": True, "skin_sheen_amount": 0.2,
+                                      "bloom": False, "bloom_amount": 0.6, "skin_soft_amount": 2},
+                                     ("1", "0.75", "0", "0", "0.20", "0", "0")),
                                     ({"anisotropy": "no", "bloom": "yes", "hdr": "yes"},
                                      ("1", "0", "0", "0", "0", "0", "0"))):
                 (root / "private/launcher.json").write_text(json.dumps(saved))
                 got = saved_launcher_settings(root)
                 self.assertEqual(tuple(got.get(name) for name in names), expected)
+                self.assertEqual(got["RECOMP_LAUNCHER_SETTINGS"], str((root / "private/launcher.json").resolve()))
+            (root / "private/launcher.json").write_text(json.dumps({"hdr_peak": 6, "hdr_white": 250, "hdr": True}))
+            got = saved_launcher_settings(root)
+            self.assertEqual((got["RECOMP_D3D_HDR_PEAK"], got["RECOMP_D3D_HDR_WHITE"]), ("6", "250"))
 
     def test_launch_prerequisites_and_command(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,9 +1,10 @@
 # Graphics options
 
-Seven launcher options improve how the game looks without changing what it
-draws. On macOS and Linux they are in the launcher's **Graphics** column; on
-Windows they have their own **Enhancements** page. Each is an environment
-variable the launcher sets, so a script can set it too.
+Graphics options improve how the game looks without changing what it
+draws. The launcher sets them at start (on macOS and Linux in its
+**Graphics** column, on Windows on its **Enhancements** page), and the
+in-game **Graphics** menu changes them while playing. Each is an
+environment variable the launcher sets, so a script can set it too.
 
 | Option | Variable | Launcher value | Default |
 |---|---|---|---|
@@ -13,24 +14,57 @@ variable the launcher sets, so a script can set it too.
 | Ambient occlusion | `RECOMP_D3D_OCCLUSION` | `0.5` (0 to 1) | Off |
 | Bloom and sun glare | `RECOMP_D3D_BLOOM` | `0.3` (0 to 1) | Off |
 | Soft skin | `RECOMP_D3D_SKIN_SOFT` | `1` (0 to 1) | Off |
-| Skin sheen | `RECOMP_D3D_SKIN_SHEEN` | `1` (0 to 1) | Off |
+| Skin sheen | `RECOMP_D3D_SKIN_SHEEN` | `0.5` (0 to 1) | Off |
+| HDR highlights | `RECOMP_D3D_HDR_PEAK` | 4 (x SDR white, 1 to 16) | |
+| HDR SDR white | `RECOMP_D3D_HDR_WHITE` | 203 (nits, 80 to 600) | |
 
 `tools/run_game.py` (macOS, Linux) and `tools/launcher.ps1` (Windows) turn the
 saved choices in `private/launcher.json` (`sun_soft`, `anisotropy`, `hdr`,
-`ambient_occlusion`, `bloom`, `skin_soft`, `skin_sheen`) into these values.
+`ambient_occlusion`, `bloom`, `skin_soft`, `skin_sheen`) into these values:
+a ticked option uses the amount the in-game menu saved (`<key>_amount`),
+else the launcher value above. They also pass the file's path as
+`RECOMP_LAUNCHER_SETTINGS`, and all three launchers keep the keys they do
+not show when they save.
+
+## In-game Graphics menu
+
+F2, or Back and Start together on a controller, opens the **Graphics**
+menu anywhere, free camera or not, and closes it again (B closes it too).
+Up and down choose a row; left and right change it, held to keep going:
+ambient occlusion (25% steps), bloom and sun glare (10%), soft sun shadows
+(25%), soft skin (25%), skin sheen (10%), anisotropic filtering, HDR output,
+HDR highlights (0.5x steps, 1.5x to 10x) and HDR SDR white (25 nits, 100 to
+400; macOS sets its own). While it is open the game reads a neutral pad.
+Changes show from the next frame: the presenters take the options
+(`graphics_options.c`) at each present, start the effects pass the first
+time occlusion or bloom is turned on, and switch the window's HDR on or off
+(the overlay starts again for the new format). Closing the menu saves them
+to the launcher's settings file (`recomp_graphics_options_save`, which
+replaces each key where it is and adds the rest). Resolution, MSAA, SMAA
+and sun shadows stay in the launcher: they set up the renderer at start.
+
+To make the switch possible, the girls' draws are always marked as a
+character's, and on Direct3D 11 every main-target draw writes the view
+depth (unless the g-buffer is on) and every lit draw shader carries the
+skin code, chosen per draw.
 
 ## HDR output
 
-On an HDR display the window's swapchain switches to HDR: extended linear
-where the display takes it (Metal's EDR on macOS), else HDR10. The game's
+On an HDR display the window's swapchain switches to HDR. On macOS that is
+extended linear (Metal's EDR, where 1 is SDR white); elsewhere HDR10 comes
+first, since gamescope (SteamOS) and Windows composite it natively and
+their extended linear puts 1 at 80 nits, which made the picture dim and
+flat on an OLED TV under gamescope. The game's
 picture stays as it is up to 60% of SDR white (linear), shown at the
 display's SDR white, and anything brighter eases up to the peak along a
 cubic, all three channels together so colours hold: the sun, sun glare,
 sea glints and skin sheen use the headroom. The peak is 4x SDR white by
 default (`RECOMP_D3D_HDR_PEAK`, 1 to 16), capped at the headroom macOS
 reports for the window's display. HDR10 converts to BT.2020 and encodes PQ
-with SDR white at 203 nits. On a display without HDR, or if the pass
-cannot be set up (the log says so), the window stays SDR.
+with SDR white at the menu's SDR white (203 nits by default); extended
+linear outside macOS scales SDR white to it as well (white / 80). On a
+display without HDR, or if the pass cannot be set up (the log says so),
+the window stays SDR.
 
 Only the window changes: screenshots and videos are taken before this
 step, so they stay SDR. The runtime's own panel is drawn into the HDR
@@ -109,7 +143,9 @@ skin, the draw's lights are evaluated per pixel:
   it: what passes under the skin and comes out on the dark side. Lighting
   per pixel also brings out the body's shape that the per-vertex lighting
   flattened.
-- **Skin sheen** adds a soft highlight of the lights' own colour: two
+- **Skin sheen** adds a soft highlight of the lights' own colour (at 100%
+  two-thirds of the first version's, which looked too shiny; the launcher
+  starts it at 50%): two
   Blinn-Phong lobes (a tight one and a broad one) with a skin's Fresnel
   (0.028 head-on), toward the camera as a non-local viewer. It shows mostly
   as a rim along edges that face the light.

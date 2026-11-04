@@ -470,8 +470,8 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
         else snprintf(text, size, "Scene speed: 1/%u (slow motion)", 1u << settings->slow);
         break;
     case RECOMP_CAMERA_SETTING_MOTION_BLUR:
-        if (settings->motion_blur == 0u) snprintf(text, size, "Motion blur: Off");
-        else snprintf(text, size, "Motion blur: %u pictures a frame", 2u << settings->motion_blur);
+        if (settings->motion_blur == 0u) snprintf(text, size, "Motion blur (recorded videos): Off");
+        else snprintf(text, size, "Motion blur (recorded videos): %u pictures a frame", 2u << settings->motion_blur);
         break;
     case RECOMP_CAMERA_SETTING_EYE_CONTACT: {
         static const char *const names[3] = {"Off", "Head", "Head and eyes"};

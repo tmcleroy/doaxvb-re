@@ -15,9 +15,20 @@ bool failed;
 SDL_GPUDevice *owner;
 Uint64 last_ticks;
 Uint32 styled_height;
+// The window's format the backend was started for: HDR output changes it.
+SDL_GPUTextureFormat started_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 
 bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
 {
+    const SDL_GPUTextureFormat format = SDL_GetGPUSwapchainTextureFormat(device, window);
+    if (ready && format != started_format) {
+        // HDR on or off: the backend starts again for the window's new format.
+        SDL_WaitForGPUIdle(device);
+        ImGui_ImplSDLGPU3_Shutdown();
+        ImGui::DestroyContext();
+        ready = false;
+        styled_height = 0u;
+    }
     if (ready) return true;
     if (failed) return false;
     IMGUI_CHECKVERSION();
@@ -27,7 +38,7 @@ bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
 
     ImGui_ImplSDLGPU3_InitInfo info{};
     info.Device = device;
-    info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(device, window);
+    info.ColorTargetFormat = format;
     info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
     if (!ImGui_ImplSDLGPU3_Init(&info)) {
         std::fprintf(stderr, "[overlay] ImGui SDL GPU backend failed to start\n");
@@ -36,6 +47,7 @@ bool start(SDL_GPUDevice *device, SDL_Window *window, Uint32 height)
         return false;
     }
     owner = device;
+    started_format = format;
     ready = true;
     last_ticks = SDL_GetTicks();
     return true;

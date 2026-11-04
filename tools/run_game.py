@@ -75,12 +75,31 @@ def launch(root, receipt_path=None, settings=False):
 TITLE_IDLE = ("default", "no-cutscene", "cpu-exhibition")
 # Frames a demo scene cut holds when the launcher's "Shorter demo cuts" is on.
 DEMO_CUT_HOLD_SHORT = "12"
-# The amount (0 to 1) each graphics option ticked in the launcher asks for.
-GRAPHICS_ON = {"sun_soft": "1", "ambient_occlusion": "0.5", "bloom": "0.3", "skin_soft": "1", "skin_sheen": "1"}
+# The amount (0 to 1) a graphics option ticked in the launcher asks for, unless
+# the in-game Graphics menu saved its own ("<key>_amount").
+GRAPHICS_ON = {"sun_soft": "1", "ambient_occlusion": "0.5", "bloom": "0.3", "skin_soft": "1", "skin_sheen": "0.5"}
+
+
+def graphics_amount(settings, key):
+    if settings.get(key) is not True:
+        return "0"
+    saved = settings.get(key + "_amount")
+    if isinstance(saved, (int, float)) and not isinstance(saved, bool) and 0 < saved <= 1:
+        return f"{saved:.2f}"
+    return GRAPHICS_ON[key]
+
+
+def graphics_number(settings, key, low, high):
+    value = settings.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high:
+        return {"RECOMP_D3D_" + key.upper(): f"{value:g}"}
+    return {}
 
 
 def saved_launcher_settings(root):
     path = root / "private" / "launcher.json"
+    # The in-game Graphics menu saves its changes here (docs/graphics-options.md).
+    where = {"RECOMP_LAUNCHER_SETTINGS": str(path.resolve())}
     try:
         settings = json.loads(path.read_text(encoding="utf-8"))
         idle = settings.get("title_idle")
@@ -93,21 +112,22 @@ def saved_launcher_settings(root):
                 "RECOMP_D3D_SUN_SHADOW": "1" if settings.get("sun_shadows") is True else "0",
                 # Graphics options (docs/graphics-options.md): anisotropic
                 # filtering is on unless turned off; the rest are off unless on.
-                "RECOMP_D3D_SUN_SOFT": GRAPHICS_ON["sun_soft"] if settings.get("sun_soft") is True else "0",
+                "RECOMP_D3D_SUN_SOFT": graphics_amount(settings, "sun_soft"),
                 "RECOMP_D3D_ANISOTROPY": "0" if settings.get("anisotropy") is False else "1",
                 "RECOMP_D3D_HDR": "1" if settings.get("hdr") is True else "0",
-                "RECOMP_D3D_OCCLUSION": GRAPHICS_ON["ambient_occlusion"]
-                if settings.get("ambient_occlusion") is True else "0",
-                "RECOMP_D3D_BLOOM": GRAPHICS_ON["bloom"] if settings.get("bloom") is True else "0",
-                "RECOMP_D3D_SKIN_SOFT": GRAPHICS_ON["skin_soft"] if settings.get("skin_soft") is True else "0",
-                "RECOMP_D3D_SKIN_SHEEN": GRAPHICS_ON["skin_sheen"] if settings.get("skin_sheen") is True else "0",
+                "RECOMP_D3D_OCCLUSION": graphics_amount(settings, "ambient_occlusion"),
+                "RECOMP_D3D_BLOOM": graphics_amount(settings, "bloom"),
+                "RECOMP_D3D_SKIN_SOFT": graphics_amount(settings, "skin_soft"),
+                "RECOMP_D3D_SKIN_SHEEN": graphics_amount(settings, "skin_sheen"),
+                **graphics_number(settings, "hdr_peak", 1, 16),
+                **graphics_number(settings, "hdr_white", 80, 600),
                 "RECOMP_TITLE_IDLE": idle if idle in TITLE_IDLE else "default",
                 **({"RECOMP_DEMO_CUT_HOLD": DEMO_CUT_HOLD_SHORT}
                    if settings.get("demo_cut_hold") is True else {}),
                 **({"RECOMP_FREE_CAMERA": "1"}
-                   if settings.get("free_camera") is True else {})}
+                   if settings.get("free_camera") is True else {}), **where}
     except (OSError, ValueError, TypeError, AttributeError, OverflowError):
-        return {}
+        return where
 
 
 def run(runner, image, root, receipt_path=None, settings=False):

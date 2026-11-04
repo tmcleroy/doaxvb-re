@@ -90,6 +90,9 @@ $settings = [pscustomobject]@{
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true
     anisotropy = $true; ambient_occlusion = $false; bloom = $false; skin_soft = $false; skin_sheen = $false; sun_soft = $false
+    # Set by the in-game Graphics menu; kept here so Play does not drop them.
+    sun_soft_amount = $null; ambient_occlusion_amount = $null; bloom_amount = $null; skin_soft_amount = $null; skin_sheen_amount = $null
+    hdr = $false; hdr_peak = $null; hdr_white = $null
 }
 try {
     $saved = Get-Content $settingsPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
@@ -526,6 +529,9 @@ $percent = $volumes[$volume.SelectedIndex]
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
     anisotropy = $anisotropy.Checked; ambient_occlusion = $occlusion.Checked; bloom = $bloom.Checked; skin_soft = $skinSoft.Checked; skin_sheen = $skinSheen.Checked; sun_soft = $sunSoft.Checked
+    sun_soft_amount = $settings.sun_soft_amount; ambient_occlusion_amount = $settings.ambient_occlusion_amount; bloom_amount = $settings.bloom_amount
+    skin_soft_amount = $settings.skin_soft_amount; skin_sheen_amount = $settings.skin_sheen_amount
+    hdr = $settings.hdr; hdr_peak = $settings.hdr_peak; hdr_white = $settings.hdr_white
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 # The runner parses the scale with atof, so always write a '.' decimal point.
 $env:RECOMP_D3D_SCALE = ($height / 480).ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -550,11 +556,21 @@ $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' 
 $env:RECOMP_D3D_RTGI = if ($rtgi.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI_STRENGTH = $strength.Value.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_RTGI_HITCOLOR = if ($hitColor.Checked) { '1' } else { '0' }
-# The amounts match tools/run_game.py's GRAPHICS_ON.
+# A ticked option uses the in-game Graphics menu's saved amount, else these
+# (tools/run_game.py's GRAPHICS_ON).
+function Amount($on, $saved, $default) {
+    if (-not $on) { return '0' }
+    if ($saved -is [ValueType] -and $saved -isnot [bool] -and [double]$saved -gt 0 -and [double]$saved -le 1) {
+        return ([double]$saved).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    $default
+}
 $env:RECOMP_D3D_ANISOTROPY = if ($anisotropy.Checked) { '1' } else { '0' }
-$env:RECOMP_D3D_OCCLUSION = if ($occlusion.Checked) { '0.5' } else { '0' }
-$env:RECOMP_D3D_BLOOM = if ($bloom.Checked) { '0.3' } else { '0' }
-$env:RECOMP_D3D_SKIN_SOFT = if ($skinSoft.Checked) { '1' } else { '0' }
-$env:RECOMP_D3D_SKIN_SHEEN = if ($skinSheen.Checked) { '1' } else { '0' }
-$env:RECOMP_D3D_SUN_SOFT = if ($sunSoft.Checked) { '1' } else { '0' }
+$env:RECOMP_D3D_OCCLUSION = Amount $occlusion.Checked $settings.ambient_occlusion_amount '0.5'
+$env:RECOMP_D3D_BLOOM = Amount $bloom.Checked $settings.bloom_amount '0.3'
+$env:RECOMP_D3D_SKIN_SOFT = Amount $skinSoft.Checked $settings.skin_soft_amount '1'
+$env:RECOMP_D3D_SKIN_SHEEN = Amount $skinSheen.Checked $settings.skin_sheen_amount '0.5'
+# The in-game Graphics menu saves its changes to this file.
+$env:RECOMP_LAUNCHER_SETTINGS = $settingsPath
+$env:RECOMP_D3D_SUN_SOFT = Amount $sunSoft.Checked $settings.sun_soft_amount '1'
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root
