@@ -8,8 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-_Static_assert(RECOMP_CAMERA_SETTING_GRAPHICS_LAST - RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 1 ==
-    RECOMP_GRAPHICS_ROW_COUNT, "a camera row for each Graphics menu row");
+/* A camera row for each Graphics menu row (a compile error otherwise). */
+typedef char graphics_rows_match[RECOMP_CAMERA_SETTING_GRAPHICS_LAST - RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 1 ==
+    RECOMP_GRAPHICS_ROW_COUNT ? 1 : -1];
 
 static bool graphics_row(RecompCameraSettingRow row)
 {
