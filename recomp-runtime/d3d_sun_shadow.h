@@ -140,9 +140,12 @@ float sunVisibility(float3 p, float soft, bool plane) {
                 float d = sun_depth.Load(int3(at*(sun_size-1), 0));
                 if (d < q.z-bias) { found += 1; total += d; }
             }
-        if (found == 0) return 1;
-        float penumbra = (q.z - total/found) * sun_light.w;
-        spacing = max(spacing, min(penumbra*0.25, 8*sun_texel));
+        // None found: the plain filter below decides. The search's taps are
+        // sparse, so calling that lit left square holes in nearby shadows.
+        if (found > 0) {
+            float penumbra = (q.z - total/found) * sun_light.w;
+            spacing = max(spacing, min(penumbra*0.25, 8*sun_texel));
+        }
     }
     float visibility = 0;
     [unroll] for (int y=0; y<5; ++y)

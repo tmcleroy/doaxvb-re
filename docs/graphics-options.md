@@ -18,11 +18,15 @@ environment variable the launcher sets, so a script can set it too.
 | HDR highlights | `RECOMP_D3D_HDR_PEAK` | 4 (x SDR white, 1 to 16) | |
 | HDR SDR white | `RECOMP_D3D_HDR_WHITE` | 203 (nits, 80 to 600) | |
 
-`tools/run_game.py` (macOS, Linux) and `tools/launcher.ps1` (Windows) turn the
+The launchers show each amount as Off or a percentage, in the in-game menu's
+steps (25% for soft sun shadows, ambient occlusion and soft skin; 10% for
+bloom and skin sheen); the value above is where an option starts when first
+turned on. `tools/run_game.py` (macOS, Linux) and `tools/launcher.ps1` (Windows) turn the
 saved choices in `private/launcher.json` (`sun_soft`, `anisotropy`, `hdr`,
 `ambient_occlusion`, `bloom`, `skin_soft`, `skin_sheen`) into these values:
-a ticked option uses the amount the in-game menu saved (`<key>_amount`),
-else the launcher value above. They also pass the file's path as
+an option that is on uses its saved amount (`<key>_amount`, written by the
+launchers and the in-game menu), else the launcher value above; turning one
+Off keeps its amount. They also pass the file's path as
 `RECOMP_LAUNCHER_SETTINGS`, and all three launchers keep the keys they do
 not show when they save.
 
@@ -81,7 +85,9 @@ sun a size, so a shadow is sharp where it leaves its caster (feet on the
 sand) and softens with distance from it (the far end of a post's or a
 palm's shadow), as real sun shadows do. Each shadowed pixel first reads the
 map's raw depths in a 4x4 search 16 texels wide; if nothing there is nearer
-the sun it is lit, otherwise the blockers' average depth gives the penumbra
+the sun the plain filter decides (the search's taps are sparse, and calling
+such a pixel lit once cut square lit holes into the shadows that fall across
+the girls' bodies), otherwise the blockers' average depth gives the penumbra
 a sun of that size casts over the distance between them, and the existing
 5x5 comparison filter widens to it (up to 8 texels a step). At 1 the
 penumbra grows 0.03 units per unit of distance, about three times the real

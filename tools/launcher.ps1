@@ -90,7 +90,7 @@ $settings = [pscustomobject]@{
     vrr = $false; fog = $true; textures = $false; textureFolder = (Join-Path $root 'private\textures\replace'); textureDump = $false
     pixelLighting = $false; smoothNormals = $false; rtgi = $false; rtgiStrength = 1; rtgiHitColor = $true
     anisotropy = $true; ambient_occlusion = $false; bloom = $false; skin_soft = $false; skin_sheen = $false; sun_soft = $false
-    # Set by the in-game Graphics menu; kept here so Play does not drop them.
+    # Graphics amounts (0 to 1), kept while their option is Off.
     sun_soft_amount = $null; ambient_occlusion_amount = $null; bloom_amount = $null; skin_soft_amount = $null; skin_sheen_amount = $null
     hdr = $false; hdr_peak = $null; hdr_white = $null
 }
@@ -355,11 +355,33 @@ New-Note $pages[2] 'RTGI needs DXR and can slow matches. Direct3D 11 is the fall
 
 # Graphics enhancements; see docs/graphics-options.md.
 $anisotropy = New-Toggle $pages[3] 'Anisotropic filtering (sharp ground at an angle)' 0 $settings.anisotropy
-$occlusion = New-Toggle $pages[3] 'Ambient occlusion (creases and contact darken)' 28 $settings.ambient_occlusion
-$bloom = New-Toggle $pages[3] 'Bloom and sun glare' 56 $settings.bloom
-$skinSoft = New-Toggle $pages[3] 'Soft skin (light passes under the skin)' 84 $settings.skin_soft
-$skinSheen = New-Toggle $pages[3] 'Skin sheen (a soft highlight)' 112 $settings.skin_sheen
-$sunSoft = New-Toggle $pages[3] 'Soft sun shadows (edges soften farther from the caster)' 140 $settings.sun_soft
+# Amounts: Off or a percentage in the in-game Graphics menu's steps. A ticked
+# option's amount is "<key>_amount" (the menu saves it), else the default
+# (tools/run_game.py's GRAPHICS_ON).
+$quarters = [double[]](0.25, 0.5, 0.75, 1)
+$tenths = [double[]](1..10 | ForEach-Object { $_ / 10 })
+function New-Amount($text, $top, $key, $default, $steps) {
+    $value = [double]$default
+    $saved = $settings."${key}_amount"
+    if ($saved -is [ValueType] -and $saved -isnot [bool] -and [double]$saved -gt 0 -and [double]$saved -le 1) { $value = [double]$saved }
+    $index = 0
+    if ($settings.$key -eq $true) {
+        $nearest = 0
+        for ($i = 1; $i -lt $steps.Count; $i++) { if ([Math]::Abs($steps[$i] - $value) -lt [Math]::Abs($steps[$nearest] - $value)) { $nearest = $i } }
+        $index = $nearest + 1
+    }
+    $names = [string[]](@('Off') + ($steps | ForEach-Object { "$([Math]::Round($_ * 100))%" }))
+    $box = Add-Row $pages[3] $text $top (New-Choice $names $index)
+    $box.Tag = $steps
+    $box
+}
+# The chosen amount, or 0 for Off.
+function Get-Amount($box) { if ($box.SelectedIndex -le 0) { 0 } else { $box.Tag[$box.SelectedIndex - 1] } }
+$occlusion = New-Amount 'Ambient occlusion' 28 'ambient_occlusion' 0.5 $quarters
+$bloom = New-Amount 'Bloom and sun glare' 56 'bloom' 0.3 $tenths
+$skinSoft = New-Amount 'Soft skin' 84 'skin_soft' 1 $quarters
+$skinSheen = New-Amount 'Skin sheen' 112 'skin_sheen' 0.5 $tenths
+$sunSoft = New-Amount 'Soft sun shadows' 140 'sun_soft' 1 $quarters
 # Soft sun shadows soften the Graphics page's sun shadows.
 $sunSoft.Enabled = $sun.Checked
 $sun.Add_CheckedChanged({ $sunSoft.Enabled = $sun.Checked })
@@ -410,7 +432,7 @@ New-Note $pages[7] "Free camera`n    F1    Fly the camera`n`nTextures`n    F12  
 function Update-Summary {
     $display = "$($resolution.SelectedItem)$dot" + $(if ($msaa.SelectedIndex) { "$($msaa.SelectedItem) MSAA" } else { 'No MSAA' }) + $(if ($smaa.Checked) { "$($dot)SMAA" })
     $render = 'Direct3D 11' + $(if ($rtgi.Checked) { ' / DXR' }) + $dot + $(if ($fog.Checked) { 'Fog on' } else { 'Fog off' }) + $(if ($vrr.Checked) { "$($dot)VRR" })
-    $extras = @($(if ($sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Checked) { 'RTGI' }), $(if ($occlusion.Checked) { 'AO' }), $(if ($bloom.Checked) { 'Bloom' }), $(if ($skinSoft.Checked -or $skinSheen.Checked) { 'Skin' })) | Where-Object { $_ }
+    $extras = @($(if ($sun.Checked) { 'Sun shadows' }), $(if ($unlock.Checked) { 'Swimsuits' }), $(if ($freeCamera.Checked) { 'Free camera' }), $(if ($textures.Checked) { 'Texture pack' }), $(if ($pixelLighting.Checked) { 'Per-pixel' }), $(if ($rtgi.Checked) { 'RTGI' }), $(if (Get-Amount $occlusion) { 'AO' }), $(if (Get-Amount $bloom) { 'Bloom' }), $(if ((Get-Amount $skinSoft) -or (Get-Amount $skinSheen)) { 'Skin' })) | Where-Object { $_ }
     $summary.Text = "$display`n$render`n" + $(if ($extras) { $extras -join $dot } else { 'None' })
 }
 
@@ -521,6 +543,8 @@ if ($PlaySaved -and -not (Test-Built)) { Select-Section 1 }
 if (-not ($PlaySaved -and (Test-Built)) -and $form.ShowDialog() -ne 'OK') { exit }
 
 $height = $heights[$resolution.SelectedIndex]
+# Off keeps the saved amount, so choosing the option again restores it.
+function Keep-Amount($box, $saved) { if (Get-Amount $box) { Get-Amount $box } else { $saved } }
 $count = $samples[$msaa.SelectedIndex]
 $percent = $volumes[$volume.SelectedIndex]
 [pscustomobject]@{
@@ -528,9 +552,9 @@ $percent = $volumes[$volume.SelectedIndex]
     sun_shadows = $sun.Checked; demo_cut_hold = $demoCut.Checked; title_idle = $idleValues[$idle.SelectedIndex]; unlock_swimsuits = $unlock.Checked; free_camera = $freeCamera.Checked
     vrr = $vrr.Checked; fog = $fog.Checked; textures = $textures.Checked; textureFolder = $textureFolder.Text; textureDump = $textureDump.Checked
     pixelLighting = $pixelLighting.Checked; smoothNormals = $smoothNormals.Checked; rtgi = $rtgi.Checked; rtgiStrength = $strength.Value; rtgiHitColor = $hitColor.Checked
-    anisotropy = $anisotropy.Checked; ambient_occlusion = $occlusion.Checked; bloom = $bloom.Checked; skin_soft = $skinSoft.Checked; skin_sheen = $skinSheen.Checked; sun_soft = $sunSoft.Checked
-    sun_soft_amount = $settings.sun_soft_amount; ambient_occlusion_amount = $settings.ambient_occlusion_amount; bloom_amount = $settings.bloom_amount
-    skin_soft_amount = $settings.skin_soft_amount; skin_sheen_amount = $settings.skin_sheen_amount
+    anisotropy = $anisotropy.Checked; ambient_occlusion = [bool](Get-Amount $occlusion); bloom = [bool](Get-Amount $bloom); skin_soft = [bool](Get-Amount $skinSoft); skin_sheen = [bool](Get-Amount $skinSheen); sun_soft = [bool](Get-Amount $sunSoft)
+    sun_soft_amount = Keep-Amount $sunSoft $settings.sun_soft_amount; ambient_occlusion_amount = Keep-Amount $occlusion $settings.ambient_occlusion_amount; bloom_amount = Keep-Amount $bloom $settings.bloom_amount
+    skin_soft_amount = Keep-Amount $skinSoft $settings.skin_soft_amount; skin_sheen_amount = Keep-Amount $skinSheen $settings.skin_sheen_amount
     hdr = $settings.hdr; hdr_peak = $settings.hdr_peak; hdr_white = $settings.hdr_white
 } | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 # The runner parses the scale with atof, so always write a '.' decimal point.
@@ -556,21 +580,13 @@ $env:RECOMP_D3D_SMOOTH_NORMALS = if ($smoothNormals.Checked) { '1' } else { '0' 
 $env:RECOMP_D3D_RTGI = if ($rtgi.Checked) { '1' } else { '0' }
 $env:RECOMP_D3D_RTGI_STRENGTH = $strength.Value.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:RECOMP_D3D_RTGI_HITCOLOR = if ($hitColor.Checked) { '1' } else { '0' }
-# A ticked option uses the in-game Graphics menu's saved amount, else these
-# (tools/run_game.py's GRAPHICS_ON).
-function Amount($on, $saved, $default) {
-    if (-not $on) { return '0' }
-    if ($saved -is [ValueType] -and $saved -isnot [bool] -and [double]$saved -gt 0 -and [double]$saved -le 1) {
-        return ([double]$saved).ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
-    }
-    $default
-}
+function Amount($box) { ([double](Get-Amount $box)).ToString('0.##', [Globalization.CultureInfo]::InvariantCulture) }
 $env:RECOMP_D3D_ANISOTROPY = if ($anisotropy.Checked) { '1' } else { '0' }
-$env:RECOMP_D3D_OCCLUSION = Amount $occlusion.Checked $settings.ambient_occlusion_amount '0.5'
-$env:RECOMP_D3D_BLOOM = Amount $bloom.Checked $settings.bloom_amount '0.3'
-$env:RECOMP_D3D_SKIN_SOFT = Amount $skinSoft.Checked $settings.skin_soft_amount '1'
-$env:RECOMP_D3D_SKIN_SHEEN = Amount $skinSheen.Checked $settings.skin_sheen_amount '0.5'
+$env:RECOMP_D3D_OCCLUSION = Amount $occlusion
+$env:RECOMP_D3D_BLOOM = Amount $bloom
+$env:RECOMP_D3D_SKIN_SOFT = Amount $skinSoft
+$env:RECOMP_D3D_SKIN_SHEEN = Amount $skinSheen
 # The in-game Graphics menu saves its changes to this file.
 $env:RECOMP_LAUNCHER_SETTINGS = $settingsPath
-$env:RECOMP_D3D_SUN_SOFT = Amount $sunSoft.Checked $settings.sun_soft_amount '1'
+$env:RECOMP_D3D_SUN_SOFT = Amount $sunSoft
 Start-Process -FilePath (Join-Path $root 'RunGame.cmd') -WorkingDirectory $root

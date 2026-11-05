@@ -123,9 +123,12 @@ static float sun_visibility(depth2d<float> map, sampler smp, depth2d<float> raw,
                 float d = raw.read(uint2(at * 4095.0));
                 if (d < q.z - bias) { found += 1.0; total += d; }
             }
-        if (found == 0.0) return 1.0;
-        float penumbra = (q.z - total / found) * sun.light.w;
-        spacing = max(spacing, float2(min(penumbra * 0.25, 8.0 * texel)));
+        // None found: the plain filter below decides. The search's taps are
+        // sparse, so calling that lit left square holes in nearby shadows.
+        if (found > 0.0) {
+            float penumbra = (q.z - total / found) * sun.light.w;
+            spacing = max(spacing, float2(min(penumbra * 0.25, 8.0 * texel)));
+        }
     }
     float visibility = 0.0;
     for (int y = 0; y < 5; ++y)
@@ -162,9 +165,12 @@ float sun_visibility(vec3 p, float soft, bool plane) {
                 float d = texelFetch(sun_map_raw, ivec2(at * 4095.0), 0).r;
                 if (d < q.z - bias) { found += 1.0; total += d; }
             }
-        if (found == 0.0) return 1.0;
-        float penumbra = (q.z - total / found) * sun.light.w;
-        spacing = max(spacing, vec2(min(penumbra * 0.25, 8.0 * texel)));
+        // None found: the plain filter below decides. The search's taps are
+        // sparse, so calling that lit left square holes in nearby shadows.
+        if (found > 0.0) {
+            float penumbra = (q.z - total / found) * sun.light.w;
+            spacing = max(spacing, vec2(min(penumbra * 0.25, 8.0 * texel)));
+        }
     }
     float visibility = 0.0;
     for (int y = 0; y < 5; ++y)

@@ -54,7 +54,7 @@ try {
         RECOMP_D3D_ANISOTROPY = '1'; RECOMP_D3D_OCCLUSION = '0'; RECOMP_D3D_BLOOM = '0'; RECOMP_D3D_SKIN_SOFT = '0'; RECOMP_D3D_SKIN_SHEEN = '0'; RECOMP_D3D_SUN_SOFT = '0' }
     $chooseDefaults = {
         Assert ($fog.Checked -and !$rtgi.Checked -and !$vrr.Checked -and !$textures.Checked) 'Wrong new-option defaults'
-        Assert ($anisotropy.Checked -and !$occlusion.Checked -and !$bloom.Checked -and !$skinSoft.Checked -and !$skinSheen.Checked) 'Wrong graphics defaults'
+        Assert ($anisotropy.Checked -and $occlusion.SelectedIndex -eq 0 -and $bloom.SelectedIndex -eq 0 -and $skinSoft.SelectedIndex -eq 0 -and $skinSheen.SelectedIndex -eq 0) 'Wrong graphics defaults'
         Assert (!$strength.Enabled -and !$hitColor.Enabled) 'RTGI controls must be disabled'
         'OK'
     }
@@ -71,6 +71,17 @@ try {
     } @{ RECOMP_D3D_SCALE = '2.25'; RECOMP_D3D_MSAA = '8'; RECOMP_D3D_SMAA = '1'; RECOMP_AUDIO_GAIN = '0.75'; RECOMP_MUSIC_SHUFFLE = '1'; RECOMP_D3D_VRR = '1'; RECOMP_D3D_FOG = '0'; RECOMP_TEXTURES = $pack; RECOMP_TEXTURE_DUMP = '1'; RECOMP_D3D_PIXEL_LIGHTING = '1'; RECOMP_D3D_SMOOTH_NORMALS = '1'; RECOMP_D3D_RTGI = '1'; RECOMP_D3D_RTGI_STRENGTH = '1.25'; RECOMP_D3D_RTGI_HITCOLOR = '0'
         RECOMP_D3D_SUN_SHADOW = '1'; RECOMP_TITLE_IDLE = 'cpu-exhibition'; RECOMP_UNLOCK_SWIMSUITS = '1'; RECOMP_DEMO_CUT_HOLD = '12'; RECOMP_FREE_CAMERA = '1'
         RECOMP_D3D_ANISOTROPY = '0'; RECOMP_D3D_OCCLUSION = '0.5'; RECOMP_D3D_BLOOM = '0.3'; RECOMP_D3D_SKIN_SOFT = '1'; RECOMP_D3D_SKIN_SHEEN = '0.5'; RECOMP_D3D_SUN_SOFT = '1' }
+    # Saved amounts pick the nearest step; Off keeps the saved amount.
+    $expectAmounts = $defaults.Clone()
+    $expectAmounts.RECOMP_D3D_SKIN_SHEEN = '0.3'; $expectAmounts.RECOMP_D3D_OCCLUSION = '0.75'; $expectAmounts.RECOMP_D3D_SKIN_SOFT = '0.5'
+    $amounts = '{"skin_sheen":true,"skin_sheen_amount":0.3,"bloom":false,"bloom_amount":0.6,"ambient_occlusion":true,"ambient_occlusion_amount":0.7}'
+    Check-Launch $amounts {
+        Assert ($skinSheen.SelectedItem -eq '30%' -and $bloom.SelectedIndex -eq 0 -and $occlusion.SelectedItem -eq '75%') 'Wrong saved amounts'
+        $skinSoft.SelectedIndex = 2
+        'OK'
+    } $expectAmounts
+    $saved = Get-Content -LiteralPath (Join-Path $testRoot 'private\launcher.json') -Raw | ConvertFrom-Json
+    Assert ($saved.bloom -eq $false -and $saved.bloom_amount -eq 0.6 -and $saved.skin_soft -eq $true -and $saved.skin_soft_amount -eq 0.5) 'Amounts did not persist'
     Check-Launch $all {
         $rtgi.Checked = $false; $vrr.Checked = $false; $fog.Checked = $true; $textures.Checked = $false
         $textureDump.Checked = $false; $pixelLighting.Checked = $false; $smoothNormals.Checked = $false

@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -38,23 +39,27 @@ enum Item {
     PLAY, QUIT, ITEM_COUNT
 };
 
-// The in-game Graphics menu's amounts and HDR levels (docs/graphics-options.md).
-const char *const kKeptKeys[] = {"sun_soft_amount", "ambient_occlusion_amount", "bloom_amount",
-    "skin_soft_amount", "skin_sheen_amount", "hdr_peak", "hdr_white"};
+// Graphics amounts (docs/graphics-options.md): Off or a percentage, in the
+// in-game Graphics menu's steps. A setting "<key>": true takes its amount from
+// "<key>_amount", else the default (tools/run_game.py's GRAPHICS_ON).
+struct Amount { Item item; const char *key; float step, fallback; };
+const Amount kAmounts[] = {{SUN_SOFT, "sun_soft", 0.25f, 1.0f}, {OCCLUSION, "ambient_occlusion", 0.25f, 0.5f},
+    {BLOOM, "bloom", 0.1f, 0.3f}, {SKIN_SOFT, "skin_soft", 0.25f, 1.0f}, {SKIN_SHEEN, "skin_sheen", 0.1f, 0.5f}};
+constexpr int kAmountCount = static_cast<int>(std::size(kAmounts));
+
+// The in-game Graphics menu's HDR levels, kept as they were written.
+const char *const kKeptKeys[] = {"hdr_peak", "hdr_white"};
 
 struct Settings {
     int height = 0;
     int msaa = 1;
     bool sun_shadows = false;
-    bool sun_soft = false;
     bool hdr = false;
-    // Values only the in-game Graphics menu sets, kept as they were written.
-    std::string kept[7];
+    std::string kept[std::size(kKeptKeys)];
     bool anisotropy = true;
-    bool occlusion = false;
-    bool bloom = false;
-    bool skin_soft = false;
-    bool skin_sheen = false;
+    // Per kAmounts: on, and the amount (0 to 1) when on or last on (0: none saved).
+    bool amount_on[kAmountCount] = {};
+    float amount[kAmountCount] = {};
     int volume = 100;
     bool shuffle = false;
     bool unlock_swimsuits = false;
@@ -90,15 +95,17 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "height", value)) settings.height = std::atoi(value.c_str());
     if (jsonValue(text, "msaa", value)) settings.msaa = std::atoi(value.c_str());
     if (jsonValue(text, "sun_shadows", value)) settings.sun_shadows = value == "true";
-    if (jsonValue(text, "sun_soft", value)) settings.sun_soft = value == "true";
     if (jsonValue(text, "hdr", value)) settings.hdr = value == "true";
     for (int i = 0; i < static_cast<int>(std::size(kKeptKeys)); ++i)
         if (jsonValue(text, kKeptKeys[i], value)) settings.kept[i] = value;
     if (jsonValue(text, "anisotropy", value)) settings.anisotropy = value != "false";
-    if (jsonValue(text, "ambient_occlusion", value)) settings.occlusion = value == "true";
-    if (jsonValue(text, "bloom", value)) settings.bloom = value == "true";
-    if (jsonValue(text, "skin_soft", value)) settings.skin_soft = value == "true";
-    if (jsonValue(text, "skin_sheen", value)) settings.skin_sheen = value == "true";
+    for (int i = 0; i < kAmountCount; ++i) {
+        if (jsonValue(text, kAmounts[i].key, value)) settings.amount_on[i] = value == "true";
+        if (jsonValue(text, (std::string(kAmounts[i].key) + "_amount").c_str(), value)) {
+            const float amount = std::strtof(value.c_str(), nullptr);
+            if (amount > 0.0f && amount <= 1.0f) settings.amount[i] = amount;
+        }
+    }
     if (jsonValue(text, "volume", value)) settings.volume = std::atoi(value.c_str());
     if (jsonValue(text, "shuffle", value)) settings.shuffle = value == "true";
     if (jsonValue(text, "unlock_swimsuits", value)) settings.unlock_swimsuits = value == "true";
@@ -117,16 +124,19 @@ bool saveSettings(const std::string &path, const Settings &settings)
     std::ofstream file(path, std::ios::trunc);
     file << "{\n  \"height\": " << settings.height << ",\n  \"msaa\": " << settings.msaa
          << ",\n  \"smaa\": false,\n  \"sun_shadows\": " << (settings.sun_shadows ? "true" : "false")
-         << ",\n  \"sun_soft\": " << (settings.sun_soft ? "true" : "false")
          << ",\n  \"hdr\": " << (settings.hdr ? "true" : "false");
     for (int i = 0; i < static_cast<int>(std::size(kKeptKeys)); ++i)
         if (!settings.kept[i].empty()) file << ",\n  \"" << kKeptKeys[i] << "\": " << settings.kept[i];
+    for (int i = 0; i < kAmountCount; ++i) {
+        file << ",\n  \"" << kAmounts[i].key << "\": " << (settings.amount_on[i] ? "true" : "false");
+        if (settings.amount[i] > 0.0f) {
+            char number[16];
+            std::snprintf(number, sizeof number, "%.2f", static_cast<double>(settings.amount[i]));
+            file << ",\n  \"" << kAmounts[i].key << "_amount\": " << number;
+        }
+    }
     file
          << ",\n  \"anisotropy\": " << (settings.anisotropy ? "true" : "false")
-         << ",\n  \"ambient_occlusion\": " << (settings.occlusion ? "true" : "false")
-         << ",\n  \"bloom\": " << (settings.bloom ? "true" : "false")
-         << ",\n  \"skin_soft\": " << (settings.skin_soft ? "true" : "false")
-         << ",\n  \"skin_sheen\": " << (settings.skin_sheen ? "true" : "false")
          << ",\n  \"volume\": " << settings.volume
          << ",\n  \"shuffle\": " << (settings.shuffle ? "true" : "false")
          << ",\n  \"unlock_swimsuits\": " << (settings.unlock_swimsuits ? "true" : "false")
@@ -167,16 +177,32 @@ struct Launcher {
         case MSAA: return kSamples[choice[item]] == 1 ? "Off" : std::to_string(kSamples[choice[item]]) + "x";
         case VOLUME: return kVolumes[choice[item]] == 0 ? "Mute" : std::to_string(kVolumes[choice[item]]) + "%";
         case IDLE: return kIdleNames[choice[item]];
+        case SUN_SOFT: case OCCLUSION: case BLOOM: case SKIN_SOFT: case SKIN_SHEEN:
+            return choice[item] == 0 ? "Off" : std::to_string(std::lround(choice[item] * amountOf(item).step * 100)) + "%";
         default: return choice[item] ? "On" : "Off";
         }
     }
 
+    static const Amount &amountOf(int item)
+    {
+        for (const Amount &amount : kAmounts)
+            if (amount.item == item) return amount;
+        return kAmounts[0];
+    }
+
     void change(int item, int step)
     {
+        // Off plus one choice per step up to 100%.
+        const int quarters = 5, tenths = 11;
         static const int counts[PLAY] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), 2, 2, 2, 2, 2, 2, 2, 2,
+            static_cast<int>(std::size(kSamples)), 2, quarters, 2, quarters, tenths, quarters, tenths, 2,
             static_cast<int>(std::size(kVolumes)), 2, 2, 2, 2, static_cast<int>(std::size(kIdleValues))};
-        if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
+        if (item >= PLAY) return;
+        // Amounts stop at Off and 100%; the rest wrap around.
+        if (item == SUN_SOFT || item == OCCLUSION || item == BLOOM || item == SKIN_SOFT || item == SKIN_SHEEN)
+            choice[item] = std::clamp(choice[item] + step, 0, counts[item] - 1);
+        else
+            choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
 
     // Play and Quit share the bottom row.
@@ -321,13 +347,13 @@ int main(int argc, char **argv)
     launcher.choice[DEMO_CUT] = settings.demo_cut ? 1 : 0;
     launcher.choice[FREE_CAMERA] = settings.free_camera ? 1 : 0;
     launcher.choice[SUN_SHADOWS] = settings.sun_shadows ? 1 : 0;
-    launcher.choice[SUN_SOFT] = settings.sun_soft ? 1 : 0;
     launcher.choice[HDR] = settings.hdr ? 1 : 0;
     launcher.choice[ANISOTROPY] = settings.anisotropy ? 1 : 0;
-    launcher.choice[OCCLUSION] = settings.occlusion ? 1 : 0;
-    launcher.choice[BLOOM] = settings.bloom ? 1 : 0;
-    launcher.choice[SKIN_SOFT] = settings.skin_soft ? 1 : 0;
-    launcher.choice[SKIN_SHEEN] = settings.skin_sheen ? 1 : 0;
+    for (int i = 0; i < kAmountCount; ++i) {
+        const Amount &a = kAmounts[i];
+        const float amount = settings.amount[i] > 0.0f ? settings.amount[i] : a.fallback;
+        launcher.choice[a.item] = settings.amount_on[i] ? std::max(1, static_cast<int>(std::lround(amount / a.step))) : 0;
+    }
     launcher.choice[IDLE] = settings.idle;
 
     int result = -1;
@@ -419,13 +445,14 @@ int main(int argc, char **argv)
         settings.demo_cut = launcher.choice[DEMO_CUT] != 0;
         settings.free_camera = launcher.choice[FREE_CAMERA] != 0;
         settings.sun_shadows = launcher.choice[SUN_SHADOWS] != 0;
-        settings.sun_soft = launcher.choice[SUN_SOFT] != 0;
         settings.hdr = launcher.choice[HDR] != 0;
         settings.anisotropy = launcher.choice[ANISOTROPY] != 0;
-        settings.occlusion = launcher.choice[OCCLUSION] != 0;
-        settings.bloom = launcher.choice[BLOOM] != 0;
-        settings.skin_soft = launcher.choice[SKIN_SOFT] != 0;
-        settings.skin_sheen = launcher.choice[SKIN_SHEEN] != 0;
+        // Off keeps the amount, so choosing it again restores it.
+        for (int i = 0; i < kAmountCount; ++i) {
+            const int choice = launcher.choice[kAmounts[i].item];
+            settings.amount_on[i] = choice > 0;
+            if (choice > 0) settings.amount[i] = choice * kAmounts[i].step;
+        }
         settings.idle = launcher.choice[IDLE];
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());

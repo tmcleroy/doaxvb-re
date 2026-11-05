@@ -316,7 +316,7 @@ off.
 Tab, or Back pressed and let go without another button, opens a list of
 camera settings in the panel while the camera flies, in pages: Camera, Lens,
 Colour, Light, Girls, Shots and Path. The first line names the page, and left
-and right on it turn the page. Keys 1 to 4 go to a saved camera spot at any
+and right on it turn the page; LB and RB (or [ and ]) turn it from any row. Keys 1 to 4 go to a saved camera spot at any
 time while flying, and Shift with them saves the view there. Up and down
 (arrow keys or the d-pad) choose a row and left and right change it; held,
 they keep going.

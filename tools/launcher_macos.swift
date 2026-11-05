@@ -46,13 +46,15 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let freeCamera = NSButton(checkboxWithTitle: "Free camera", target: nil, action: nil)
     let sunShadows = NSButton(checkboxWithTitle: "Sun shadows", target: nil, action: nil)
     // Graphics enhancements; see docs/graphics-options.md.
-    let sunSoft = NSButton(checkboxWithTitle: "Soft sun shadows", target: nil, action: nil)
+    // Amounts: Off or a percentage, as in the in-game Graphics menu.
+    let sunSoft = NSPopUpButton()
     let hdr = NSButton(checkboxWithTitle: "HDR output (HDR displays)", target: nil, action: nil)
     let anisotropy = NSButton(checkboxWithTitle: "Anisotropic filtering", target: nil, action: nil)
-    let occlusion = NSButton(checkboxWithTitle: "Ambient occlusion", target: nil, action: nil)
-    let bloom = NSButton(checkboxWithTitle: "Bloom and sun glare", target: nil, action: nil)
-    let skinSoft = NSButton(checkboxWithTitle: "Soft skin", target: nil, action: nil)
-    let skinSheen = NSButton(checkboxWithTitle: "Skin sheen", target: nil, action: nil)
+    let occlusion = NSPopUpButton()
+    let bloom = NSPopUpButton()
+    let skinSoft = NSPopUpButton()
+    let skinSheen = NSPopUpButton()
+    var amounts: [(key: String, popup: NSPopUpButton, steps: [Double])] = []
     var launched = false
 
     func addHeader(_ title: String, _ x: CGFloat) {
@@ -92,15 +94,18 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         smaa.isEnabled = false
         // Off keeps the game's original shadows; see docs/sun-shadow.md.
         sunShadows.state = boolSetting("sun_shadows") ? .on : .off
-        sunSoft.state = boolSetting("sun_soft") ? .on : .off
         hdr.state = boolSetting("hdr") ? .on : .off
         anisotropy.state = boolSetting("anisotropy", true) ? .on : .off
-        occlusion.state = boolSetting("ambient_occlusion") ? .on : .off
-        bloom.state = boolSetting("bloom") ? .on : .off
-        skinSoft.state = boolSetting("skin_soft") ? .on : .off
-        skinSheen.state = boolSetting("skin_sheen") ? .on : .off
-        for (i, box) in [sunShadows, sunSoft, anisotropy, occlusion, bloom, skinSoft, skinSheen, hdr].enumerated() {
-            box.frame = NSRect(x: 16, y: 218 - CGFloat(i) * 26, width: 236, height: 20)
+        let quarters = [0.25, 0.5, 0.75, 1.0], tenths = (1...10).map { Double($0) / 10 }
+        amounts = [("sun_soft", sunSoft, quarters), ("ambient_occlusion", occlusion, quarters),
+                   ("bloom", bloom, tenths), ("skin_soft", skinSoft, quarters), ("skin_sheen", skinSheen, tenths)]
+        for (i, box) in [sunShadows, anisotropy, hdr].enumerated() {
+            box.frame = NSRect(x: 16, y: 218 - CGFloat(i) * 24, width: 236, height: 20)
+        }
+        let titles = ["Soft shadows", "Occlusion", "Bloom, glare", "Soft skin", "Skin sheen"]
+        for (i, amount) in amounts.enumerated() {
+            addRow(titles[i], amount.popup, ["Off"] + amount.steps.map { "\(Int(($0 * 100).rounded()))%" },
+                   amountIndex(amount.key, amount.steps), 144 - CGFloat(i) * 28)
         }
         // Soft sun shadows soften the sun shadows; without them there is nothing to soften.
         sunSoft.isEnabled = sunShadows.state == .on
@@ -124,12 +129,22 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 416, y: 12, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, sunSoft, hdr, anisotropy, occlusion, bloom,
-                     skinSoft, skinSheen, idleLabel, idle, play] { window.contentView!.addSubview(view) }
+        for view in [smaa, shuffle, unlock, demoCut, freeCamera, sunShadows, hdr, anisotropy, idleLabel, idle, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // The saved amount (the in-game Graphics menu's, or tools/run_game.py's
+    // GRAPHICS_ON default) on the nearest step; 0 is Off.
+    func amountIndex(_ key: String, _ steps: [Double]) -> Int {
+        guard boolSetting(key) else { return 0 }
+        let defaults = ["sun_soft": 1.0, "ambient_occlusion": 0.5, "bloom": 0.3, "skin_soft": 1.0, "skin_sheen": 0.5]
+        var value = (settings[key + "_amount"] as? NSNumber)?.doubleValue ?? defaults[key]!
+        if !(value > 0 && value <= 1) { value = defaults[key]! }
+        let nearest = steps.indices.min(by: { abs(steps[$0] - value) < abs(steps[$1] - value) })!
+        return nearest + 1
     }
 
     @objc func sunShadowsChanged() {
@@ -137,7 +152,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func play() {
-        // Keys this window does not show (the in-game Graphics menu's amounts) are kept.
+        // Keys this window does not show (the HDR levels) are kept.
         var chosen: [String: Any] = settings
         let shown: [String: Any] = [
             "height": heights[resolution.indexOfSelectedItem],
@@ -149,16 +164,20 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "demo_cut_hold": demoCut.state == .on,
             "free_camera": freeCamera.state == .on,
             "sun_shadows": sunShadows.state == .on,
-            "sun_soft": sunSoft.state == .on,
             "hdr": hdr.state == .on,
             "anisotropy": anisotropy.state == .on,
-            "ambient_occlusion": occlusion.state == .on,
-            "bloom": bloom.state == .on,
-            "skin_soft": skinSoft.state == .on,
-            "skin_sheen": skinSheen.state == .on,
             "title_idle": idleValues[idle.indexOfSelectedItem],
         ]
         for (key, value) in shown { chosen[key] = value }
+        // Off keeps the amount, so choosing it again restores it.
+        for amount in amounts {
+            let index = amount.popup.indexOfSelectedItem
+            chosen[amount.key] = index > 0
+            // A decimal number, so the file says 0.3 rather than 0.29999999999999999.
+            if index > 0 {
+                chosen[amount.key + "_amount"] = NSDecimalNumber(string: String(format: "%.2f", amount.steps[index - 1]))
+            }
+        }
         do {
             try FileManager.default.createDirectory(
                 at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)

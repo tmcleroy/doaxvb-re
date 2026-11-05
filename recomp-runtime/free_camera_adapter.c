@@ -187,6 +187,8 @@ static struct {
     /* The field of view the camera started with, for a reset. */
     float start_fov;
     HeldRepeat row_repeat, value_repeat;
+    /* LB/RB (or [ and ]) held from the last poll: -1, 0 or 1. */
+    int page_turn_held;
     RecompCameraSettings settings;
     /* How far ahead of the camera the chosen character is; zero for none. */
     float character_focus;
@@ -548,11 +550,20 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
         state.setting_line = (line % lines + lines) % lines;
     }
     int steps = held_repeat(&state.value_repeat, (int)right - (int)left, now, &released);
+    const int pages = (int)recomp_camera_settings_page_count();
     if (steps != 0 && state.setting_line == 0) {
-        const int pages = (int)recomp_camera_settings_page_count();
         state.setting_page = (unsigned)((((int)state.setting_page + (steps > 0 ? 1 : -1)) % pages + pages) % pages);
         steps = 0;
     }
+    /* LB and RB, or [ and ], turn the page from any row, keeping the line. */
+    const bool page_back = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
+        gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED;
+    const bool page_next = recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
+        gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED;
+    const int turn = (int)page_next - (int)page_back;
+    if (turn != 0 && turn != state.page_turn_held)
+        state.setting_page = (unsigned)((((int)state.setting_page + turn) % pages + pages) % pages);
+    state.page_turn_held = turn;
     page = recomp_camera_settings_page(state.setting_page);
     if (state.setting_line > (int)page->count) state.setting_line = (int)page->count;
     state.setting_row = state.setting_line == 0 ? -1 : (int)page->rows[state.setting_line - 1];
@@ -677,8 +688,9 @@ static bool take_sample(const RecompInputGamepad *raw)
     state.freeze_held = freeze;
     const bool paused = recomp_scene_freeze_active();
 
+    /* With the settings open, LB and RB turn their pages instead. */
     bool overlay = (state.active || paused) && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_H) ||
-        (state.active && gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED));
+        (state.active && !state.settings_open && gamepad->analog_buttons[ANALOG_BLACK] >= ANALOG_PRESSED));
     if (overlay && !state.overlay_held) {
         /* A clean view hides the game's overlay and the runtime's panel
            together; the next press shows both. The model viewer keeps the
@@ -690,7 +702,7 @@ static bool take_sample(const RecompInputGamepad *raw)
     state.overlay_held = overlay;
 
     bool step = (state.active || paused) && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_PERIOD) ||
-        (state.active && gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED));
+        (state.active && !state.settings_open && gamepad->analog_buttons[ANALOG_WHITE] >= ANALOG_PRESSED));
     /* Holding it steps on and on, every frame after a while. */
     bool step_released;
     int steps = held_repeat(&state.step_repeat, step ? 1 : 0, milliseconds(), &step_released);
@@ -712,9 +724,11 @@ static bool take_sample(const RecompInputGamepad *raw)
 
     /* A press moves to the next or previous clip; holding keeps moving,
        faster the longer it is held, and the clip plays when let go. */
-    bool clip_back = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET) ||
+    /* With the settings open, [ and ] turn their pages instead. */
+    const bool brackets = state.active && !state.settings_open;
+    bool clip_back = state.active && ((brackets && recomp_input_host_key(RECOMP_INPUT_HOST_KEY_LEFT_BRACKET)) ||
         (dpad & XBOX_DPAD_LEFT) != 0u);
-    bool clip_next = state.active && (recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET) ||
+    bool clip_next = state.active && ((brackets && recomp_input_host_key(RECOMP_INPUT_HOST_KEY_RIGHT_BRACKET)) ||
         (dpad & XBOX_DPAD_RIGHT) != 0u);
     int places = held_repeat(&state.clip_held, (int)clip_next - (int)clip_back, now, &released);
     if (places != 0) recomp_actor_pose_browse(places);
@@ -1387,7 +1401,7 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
     if (state.settings_open) {
         recomp_overlay_set_title(text, "CAMERA SETTINGS");
         const RecompCameraSettingsPage *page = recomp_camera_settings_page(state.setting_page);
-        recomp_overlay_add_line(text, "%s Page: %s (%u of %u, left/right turns)", state.setting_line == 0 ? ">" : " ",
+        recomp_overlay_add_line(text, "%s Page: %s (%u of %u, LB/RB or left/right here turn)", state.setting_line == 0 ? ">" : " ",
             page->name, state.setting_page + 1u, recomp_camera_settings_page_count());
         for (unsigned line = 0u; line < page->count; ++line) {
             const int row = (int)page->rows[line];
@@ -1408,8 +1422,8 @@ static void fill_overlay(RecompOverlayText *text, bool viewer)
             recomp_overlay_add_line(text, "%s %s", row == state.setting_row ? ">" : " ", value);
         }
         recomp_overlay_set_hint(text, state.controller_hints > 0
-            ? "Back close  |  D-pad up/down choose  |  D-pad left/right change  |  sticks still fly"
-            : "Tab close  |  up/down choose  |  left/right change  |  WASD and right-drag still fly");
+            ? "Back close  |  LB/RB page  |  D-pad up/down choose  |  D-pad left/right change  |  sticks still fly"
+            : "Tab close  |  [ ] page  |  up/down choose  |  left/right change  |  WASD and right-drag still fly");
         return;
     }
 
