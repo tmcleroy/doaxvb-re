@@ -47,6 +47,10 @@ to the launcher's settings file (`recomp_graphics_options_save`, which
 replaces each key where it is and adds the rest). Resolution, MSAA, SMAA
 and sun shadows stay in the launcher: they set up the renderer at start.
 
+The same rows are also the free camera's last settings page, **Graphics**
+(LB/RB turn to it), so they can be dialled in while framing a shot; closing
+the camera settings saves them as closing the menu does.
+
 To make the switch possible, the girls' draws are always marked as a
 character's, and on Direct3D 11 every main-target draw writes the view
 depth (unless the g-buffer is on) and every lit draw shader carries the

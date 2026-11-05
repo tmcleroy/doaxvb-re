@@ -1,9 +1,20 @@
 #include "camera_settings.h"
 
+#include "graphics_menu.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+_Static_assert(RECOMP_CAMERA_SETTING_GRAPHICS_LAST - RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 1 ==
+    RECOMP_GRAPHICS_ROW_COUNT, "a camera row for each Graphics menu row");
+
+static bool graphics_row(RecompCameraSettingRow row)
+{
+    return row >= RECOMP_CAMERA_SETTING_GRAPHICS_FIRST && row <= RECOMP_CAMERA_SETTING_GRAPHICS_LAST;
+}
 
 static const float F_NUMBERS[] = {1.4f, 2.0f, 2.8f, 4.0f, 5.6f, 8.0f, 11.0f, 16.0f, 22.0f};
 enum { F_NUMBER_COUNT = sizeof F_NUMBERS / sizeof F_NUMBERS[0] };
@@ -145,6 +156,12 @@ static const RecompCameraSettingRow CAMERA_ROWS[] = {
     RECOMP_CAMERA_SETTING_HIDE_BALL,
 }, SHOTS_ROWS[] = {
     RECOMP_CAMERA_SETTING_SHOT_SIZE, RECOMP_CAMERA_SETTING_BACKGROUND, RECOMP_CAMERA_SETTING_BACKDROP,
+}, GRAPHICS_ROWS[] = {
+    RECOMP_CAMERA_SETTING_GRAPHICS_FIRST, RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 1,
+    RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 2, RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 3,
+    RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 4, RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 5,
+    RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 6, RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 7,
+    RECOMP_CAMERA_SETTING_GRAPHICS_LAST,
 }, PATH_ROWS[] = {
     RECOMP_CAMERA_SETTING_PATH, RECOMP_CAMERA_SETTING_PATH_LENGTH, RECOMP_CAMERA_SETTING_PATH_PLAY,
     RECOMP_CAMERA_SETTING_RECORD,
@@ -154,6 +171,7 @@ static const RecompCameraSettingRow CAMERA_ROWS[] = {
 static const RecompCameraSettingsPage PAGES[] = {
     PAGE("Camera", CAMERA_ROWS), PAGE("Lens", LENS_ROWS), PAGE("Colour", COLOUR_ROWS),
     PAGE("Light", LIGHT_ROWS), PAGE("Girls", GIRLS_ROWS), PAGE("Shots", SHOTS_ROWS), PAGE("Path", PATH_ROWS),
+    PAGE("Graphics", GRAPHICS_ROWS),
 };
 #undef PAGE
 
@@ -193,6 +211,15 @@ static unsigned clamp_index(int value, unsigned count)
 void recomp_camera_settings_change(RecompCameraSettings *settings, RecompCameraSettingRow row,
     int steps, float *fov, float character_focus)
 {
+    /* Graphics options change at once, for everything drawn. */
+    if (graphics_row(row)) {
+        if (steps == 0) return;
+        RecompGraphicsOptions options;
+        recomp_graphics_options_get(&options);
+        recomp_graphics_menu_change(&options, (RecompGraphicsMenuRow)(row - RECOMP_CAMERA_SETTING_GRAPHICS_FIRST), steps);
+        recomp_graphics_options_set(&options);
+        return;
+    }
     switch (row) {
     case RECOMP_CAMERA_SETTING_DEPTH_OF_FIELD:
         if (steps % 2 != 0) settings->depth_of_field = !settings->depth_of_field;
@@ -341,6 +368,14 @@ void recomp_camera_settings_describe(const RecompCameraSettings *settings, Recom
     float fov, float character_focus, char *text, size_t size)
 {
     static const char *const focus_names[RECOMP_CAMERA_FOCUS_COUNT] = {"On her", "Centre of frame", "Manual"};
+    if (graphics_row(row)) {
+        RecompGraphicsOptions options;
+        recomp_graphics_options_get(&options);
+        const char *sun = getenv("RECOMP_D3D_SUN_SHADOW");
+        recomp_graphics_menu_describe(&options, (RecompGraphicsMenuRow)(row - RECOMP_CAMERA_SETTING_GRAPHICS_FIRST),
+            sun != NULL && strcmp(sun, "1") == 0, text, size);
+        return;
+    }
     switch (row) {
     case RECOMP_CAMERA_SETTING_RESET:
         snprintf(text, size, "Reset all camera options: press right");

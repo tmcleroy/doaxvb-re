@@ -532,6 +532,18 @@ static void take_settings_input(const RecompInputGamepad *gamepad, uint64_t now)
     }
     state.back_held = back;
     if (!state.active) state.settings_open = false;
+    /* The Graphics page's changes go to the launcher's settings as the list
+       closes, as the Graphics menu's do. */
+    static bool was_open;
+    static uint32_t graphics_seen;
+    if (state.settings_open && !was_open) graphics_seen = recomp_graphics_options_changes();
+    if (!state.settings_open && was_open && recomp_graphics_options_changes() != graphics_seen) {
+        RecompGraphicsOptions options;
+        recomp_graphics_options_get(&options);
+        if (recomp_graphics_options_save(&options))
+            fprintf(stderr, "recomp graphics: saved to the launcher's settings\n");
+    }
+    was_open = state.settings_open;
     if (!state.settings_open) return;
 
     bool released;
@@ -834,6 +846,14 @@ static float stick(int16_t value)
     return axis;
 }
 
+/* A trigger, 0 to 1. Resting triggers often read a little above 0, and
+   without a deadzone that sank the camera slowly into the ground. */
+static float trigger(uint8_t value)
+{
+    const float pull = (float)value / 255.0f;
+    return pull < STICK_DEADZONE ? 0.0f : (pull - STICK_DEADZONE) / (1.0f - STICK_DEADZONE);
+}
+
 static float key(RecompInputHostKey positive, RecompInputHostKey negative)
 {
     return (recomp_input_host_key(positive) ? 1.0f : 0.0f) -
@@ -851,8 +871,7 @@ static void read_controls(RecompFreeCameraControls *controls)
 
     memset(controls, 0, sizeof *controls);
     controls->move[0] = stick(pad->thumb_lx) + key(RECOMP_INPUT_HOST_KEY_D, RECOMP_INPUT_HOST_KEY_A);
-    controls->move[1] = ((float)pad->analog_buttons[ANALOG_RTRIG] -
-        (float)pad->analog_buttons[ANALOG_LTRIG]) / 255.0f +
+    controls->move[1] = trigger(pad->analog_buttons[ANALOG_RTRIG]) - trigger(pad->analog_buttons[ANALOG_LTRIG]) +
         key(RECOMP_INPUT_HOST_KEY_E, RECOMP_INPUT_HOST_KEY_Q);
     controls->move[2] = stick(pad->thumb_ly) + key(RECOMP_INPUT_HOST_KEY_W, RECOMP_INPUT_HOST_KEY_S);
     /* With the settings open the arrows are theirs; the right stick and the

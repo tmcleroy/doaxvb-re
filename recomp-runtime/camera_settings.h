@@ -61,6 +61,11 @@ typedef enum RecompCameraSettingRow {
     RECOMP_CAMERA_SETTING_FACES,
     RECOMP_CAMERA_SETTING_EYES,
     RECOMP_CAMERA_SETTING_MOUTH,
+    /* The in-game Graphics menu's rows (graphics_menu.h), in its order:
+       graphics options, not camera settings, so they are not in the
+       camera's store; the launcher's settings keep them. */
+    RECOMP_CAMERA_SETTING_GRAPHICS_FIRST,
+    RECOMP_CAMERA_SETTING_GRAPHICS_LAST = RECOMP_CAMERA_SETTING_GRAPHICS_FIRST + 8,
     RECOMP_CAMERA_SETTING_COUNT
 } RecompCameraSettingRow;
 

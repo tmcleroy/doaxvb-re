@@ -105,6 +105,7 @@ enum {
     LIST_STATE_E = 0x005C5896u,
     SCENE = 0x005DECE0u,
     SCENE_MATCH = 0,
+    SCENE_ATTRACT = 2,
     RESULTS_CHOICE = 0x005D8978u,
     RESULTS_QUIT = 3,
     MATCH_OVER = 0x004D6FC8u,
@@ -409,8 +410,10 @@ static void viewer_tick(uint32_t frame)
     else recomp_free_camera_overlay(session == VIEWER_VIEWING);
     if (session == VIEWER_IDLE) restore_courts();
     if (session != VIEWER_VIEWING) {
+        /* A match, or the attract demo's (scene 2), which plays one too. */
+        const uint8_t scene = *recomp_memory(SCENE, 1u);
         const bool hide = ball_requested && recomp_free_camera_active() &&
-            *recomp_memory(SCENE, 1u) == SCENE_MATCH;
+            (scene == SCENE_MATCH || scene == SCENE_ATTRACT);
         if (hide != ball_hidden_for_request) hide_ball(hide);
         ball_hidden_for_request = hide;
     }

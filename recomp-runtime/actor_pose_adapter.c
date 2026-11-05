@@ -695,6 +695,33 @@ unsigned recomp_actor_pose_chosen_type(void)
     return active(pose.actor) ? *recomp_memory(root_of(pose.actor) + 1u, 1u) : 0u;
 }
 
+/* Joints are drawn with banks the game derives from the bones only as the
+   scene runs (0x000AE350, then 0x000AE3F0, which writes each bone's inverse
+   at 0x004D72F0 + n * 0x800 through the scratch matrix at 0x00A24190): bones
+   put back without them pull her limbs apart at the joints. */
+static void derive_joint_banks(uint32_t mask)
+{
+    const RecompRegisters registers = recomp_runtime.registers;
+    RecompFpuContext fpu;
+    recomp_fpu_context_save(&fpu);
+    uint8_t scratch[64];
+    recomp_guest_load(scratch, 0x00A24190u, sizeof scratch);
+    for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
+        if ((mask & (1u << actor)) == 0u) continue;
+        recomp_runtime.registers.esp = registers.esp - 4u;
+        *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+        recomp_runtime.registers.edx = actor;
+        sub_000AE350();
+        recomp_runtime.registers.esp = registers.esp - 4u;
+        *recomp_memory_u32(recomp_runtime.registers.esp) = 0u;
+        recomp_runtime.registers.eax = actor;
+        sub_000AE3F0();
+    }
+    recomp_guest_store(0x00A24190u, scratch, sizeof scratch);
+    recomp_runtime.registers = registers;
+    recomp_fpu_context_restore(&fpu);
+}
+
 unsigned recomp_actor_pose_history_step(int step)
 {
     if (history.count == 0u) return 0u;
@@ -703,13 +730,16 @@ unsigned recomp_actor_pose_history_step(int step)
     if (back > (int)history.count - 1) back = (int)history.count - 1;
     history.back = (unsigned)back;
     const unsigned index = (history.newest + HISTORY - history.back) % HISTORY;
+    uint32_t put_back = 0u;
     for (uint32_t actor = 0u; actor < ACTOR_COUNT; ++actor) {
         /* A frame from before the scene changed may hold another character
            in this place (her type, at +1 of the root block): leave her. */
         if (!active(actor) || history.roots[index][actor][1] != *recomp_memory(root_of(actor) + 1u, 1u)) continue;
         recomp_guest_store(bone_of(actor, 0u), history.bones[index][actor], BONE_COUNT * BONE_SIZE);
         recomp_guest_store(root_of(actor), history.roots[index][actor], ROOT_STRIDE);
+        put_back |= 1u << actor;
     }
+    derive_joint_banks(put_back);
     return history.back;
 }
 

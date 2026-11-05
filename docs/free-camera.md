@@ -17,7 +17,7 @@ you freeze it.
 | Action | Keyboard | Controller |
 |---|---|---|
 | Move | W A S D | Left stick |
-| Down / up | Q / E | Left / right trigger |
+| Down / up | Q / E | Left / right trigger (the first 15% of a pull does nothing, so a resting trigger does not sink the camera) |
 | Look | Arrow keys, or drag with the right mouse button | Right stick |
 | Zoom in / out | Z / X | (move closer with the left stick) |
 | Faster / slower | Shift / Ctrl (held) | A / B (held) |
@@ -315,7 +315,9 @@ off.
 
 Tab, or Back pressed and let go without another button, opens a list of
 camera settings in the panel while the camera flies, in pages: Camera, Lens,
-Colour, Light, Girls, Shots and Path. The first line names the page, and left
+Colour, Light, Girls, Shots, Path and Graphics (the in-game Graphics menu's
+rows, docs/graphics-options.md: changed at once, saved to the launcher's
+settings when the list closes). The first line names the page, and left
 and right on it turn the page; LB and RB (or [ and ]) turn it from any row. Keys 1 to 4 go to a saved camera spot at any
 time while flying, and Shift with them saves the view there. Up and down
 (arrow keys or the d-pad) choose a row and left and right change it; held,
@@ -345,7 +347,7 @@ the sticks, WASD and the right mouse button still fly.
 | Orbit | Off, Around the focus, Turntable |
 | Track her | Off, Look at her (fly anywhere, aimed at her), Follow her (also rides along with her) |
 | Hand-held | Off, Light, Medium, Strong: the view sways a little, as a camera held in the hands |
-| Ball | Shown / Hidden (in a match) |
+| Ball | Shown / Hidden (in a match or the attract demo) |
 | Other girls | Shown / Hidden |
 | Screenshot size | 1x to 4x the frame, drawn at that size |
 | Time of day | The stage's own, or 06:00 to 22:00 in half hours ([`time-of-day.md`](time-of-day.md)) |
@@ -385,8 +387,9 @@ move in and out, and the triggers (Q and E) raise the point; Turntable also
 turns by itself, once in about 18 seconds (`recomp_free_camera_orbit_step` in
 `free_camera.c`). Hiding the other girls first chooses the girl nearest the
 middle of the view, by her hips, and hides the rest as the model viewer does;
-hiding the ball uses the model viewer's ball range, so it works only in a
-match.
+hiding the ball uses the model viewer's ball range, so it works in a match
+and in the attract demo's matches (scene 2; it once checked only for scene 0,
+so the ball stayed in the demo).
 
 Roll turns the camera's view about its line of sight after the game builds
 it, so nothing is cropped. A screenshot size above 1x draws the next frame
@@ -524,7 +527,10 @@ without blending. Stepping poses back works on a frozen
 scene: every skeleton build records each character's 32 bones (0x004D3650 +
 n * 0x800) and her root block (0x004D6FF0 + n * 0xBC), which her bones are
 drawn relative to, for the last 600 frames (`recomp_actor_pose_history_step`),
-and stepping back puts a frame's back. A frozen scene builds no skeletons, so
+and stepping back puts a frame's back, then derives the joint banks from those
+bones as the scene would (0x000AE350, then 0x000AE3F0, which writes each
+bone's inverse; without them a stepped-back girl's elbows and ankles tore into
+spikes, since the banks still held the newest frame's). A frozen scene builds no skeletons, so
 they stay; stepping forward goes through the history and then runs the scene
 a frame. Only the characters go back: the ball, the camera and everything
 else stay where the newest frame left them. The root block is her whole
